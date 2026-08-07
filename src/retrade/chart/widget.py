@@ -131,6 +131,12 @@ class ChartWidget(QWidget):
     def clear_trade_levels(self) -> None:
         self._run("window.retradeChart.clearTradeLevels();")
 
+    def set_overlays(self, overlays: dict[str, Any]) -> None:
+        self._run(f"window.retradeChart.setOverlays({json.dumps(overlays)});")
+
+    def clear_overlays(self) -> None:
+        self._run("window.retradeChart.clearOverlays();")
+
     def set_hud(self, text: str) -> None:
         self._run(f"window.retradeChart.setHud({json.dumps(text)});")
 

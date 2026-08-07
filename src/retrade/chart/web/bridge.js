@@ -46,6 +46,8 @@
   let dragTarget = null; // "tp" | "sl" | null
   let levelsEditable = false;
   let currentLevels = { entry: null, tp: null, sl: null };
+  let overlayPriceLines = [];
+  let overlayZoneSeries = [];
 
   function resize() {
     chart.applyOptions({
@@ -76,6 +78,71 @@
       slLine = null;
     }
     currentLevels = { entry: null, tp: null, sl: null };
+  }
+
+  function clearOverlays() {
+    overlayPriceLines.forEach(function (line) {
+      candleSeries.removePriceLine(line);
+    });
+    overlayPriceLines = [];
+    overlayZoneSeries.forEach(function (series) {
+      chart.removeSeries(series);
+    });
+    overlayZoneSeries = [];
+    candleSeries.setMarkers([]);
+  }
+
+  function setOverlays(payload) {
+    clearOverlays();
+    if (!payload) {
+      return;
+    }
+    const markers = payload.markers || [];
+    candleSeries.setMarkers(markers);
+
+    (payload.levels || []).forEach(function (lv) {
+      const line = candleSeries.createPriceLine({
+        price: lv.price,
+        color: lv.color || "#787b86",
+        lineWidth: lv.lineWidth || 1,
+        lineStyle: lv.lineStyle == null ? 2 : lv.lineStyle,
+        axisLabelVisible: true,
+        title: lv.title || "",
+      });
+      overlayPriceLines.push(line);
+    });
+
+    (payload.zones || []).forEach(function (zone) {
+      const top = chart.addLineSeries({
+        color: zone.borderColor || "#26a69a",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.SparseDotted,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      const bottom = chart.addLineSeries({
+        color: zone.borderColor || "#26a69a",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.SparseDotted,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      // Extend zone a bit to the right for visibility.
+      const t1 = zone.timeFrom;
+      const t2 = zone.timeTo;
+      const t3 = t2 + Math.max(1, Math.floor((t2 - t1) * 3));
+      top.setData([
+        { time: t1, value: zone.priceTop },
+        { time: t3, value: zone.priceTop },
+      ]);
+      bottom.setData([
+        { time: t1, value: zone.priceBottom },
+        { time: t3, value: zone.priceBottom },
+      ]);
+      overlayZoneSeries.push(top, bottom);
+    });
   }
 
   function makeLine(price, color, title) {
@@ -202,6 +269,8 @@
     },
     setTradeLevels: setTradeLevels,
     clearTradeLevels: clearTradeLines,
+    setOverlays: setOverlays,
+    clearOverlays: clearOverlays,
     setHud: function (text) {
       hud.textContent = text || "";
     },

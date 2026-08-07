@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QStatusBar,
     QVBoxLayout,
@@ -22,8 +23,14 @@ from PySide6.QtWidgets import (
 
 from retrade.chart.widget import ChartWidget
 from retrade.config import Settings
+from retrade.domain.explanation import (
+    Explanation,
+    build_explanation,
+    structure_to_overlays,
+)
 from retrade.domain.playback import PlaybackState, RoundSession
 from retrade.domain.scenario import build_scenario
+from retrade.domain.smc import analyze_series
 from retrade.domain.trading import (
     Side,
     TradeOutcome,
@@ -70,6 +77,7 @@ class MainWindow(QMainWindow):
         self._side: Side | None = None
         self._active_tf = settings.execution_timeframe
         self._plan_entry = 0.0
+        self._explanation: Explanation | None = None
 
         self.setWindowTitle(f"Retrade — {settings.symbol}")
         self.resize(1280, 800)
@@ -78,6 +86,15 @@ class MainWindow(QMainWindow):
         self._chart = ChartWidget(self)
         self._chart.ready.connect(self._on_chart_ready)
         self._chart.levels_changed.connect(self._on_levels_changed)
+
+        self._explain_view = QPlainTextEdit(self)
+        self._explain_view.setReadOnly(True)
+        self._explain_view.setObjectName("explainView")
+        self._explain_view.setPlaceholderText(
+            "После результата здесь появится разбор SMC…"
+        )
+        self._explain_view.setMinimumHeight(120)
+        self._explain_view.setMaximumHeight(180)
 
         self._symbol_label = QLabel(settings.symbol)
         self._symbol_label.setObjectName("symbolLabel")
@@ -149,6 +166,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(8)
         root.addLayout(header)
         root.addWidget(self._chart, stretch=1)
+        root.addWidget(self._explain_view)
         root.addLayout(action_row)
 
         central = QWidget(self)
@@ -212,6 +230,14 @@ class MainWindow(QMainWindow):
                 padding: 6px;
                 min-width: 140px;
             }
+            QPlainTextEdit#explainView {
+                background-color: #131722;
+                border: 1px solid #2a2e39;
+                border-radius: 4px;
+                color: #d1d4dc;
+                padding: 8px;
+                font-size: 12px;
+            }
             QStatusBar {
                 background-color: #0f1219;
                 color: #787b86;
@@ -228,6 +254,9 @@ class MainWindow(QMainWindow):
         self._timer.stop()
         self._playback = None
         self._side = None
+        self._explanation = None
+        self._explain_view.clear()
+        self._chart.clear_overlays()
         self._set_phase(UiPhase.LOADING)
         self.statusBar().showMessage(
             f"Loading {self._settings.symbol} candles from Binance…"
@@ -257,6 +286,7 @@ class MainWindow(QMainWindow):
         self._tf_buttons[self._active_tf].setChecked(True)
         self._refresh_chart(fit=True)
         self._chart.clear_trade_levels()
+        self._chart.clear_overlays()
         self._set_phase(UiPhase.DECIDE)
         self.statusBar().showMessage(
             f"{scenario.symbol} | visible {len(scenario.visible_execution)} bars | "
@@ -281,6 +311,24 @@ class MainWindow(QMainWindow):
         self._chart.set_hud(
             f"{self._settings.symbol}  {self._active_tf.upper()}"
         )
+        if self._phase is UiPhase.RESULT and self._explanation is not None:
+            self._apply_overlays_for_tf(self._active_tf)
+
+    def _apply_overlays_for_tf(self, timeframe: str) -> None:
+        if self._explanation is None:
+            return
+        if timeframe == self._settings.execution_timeframe:
+            self._chart.set_overlays(self._explanation.overlays)
+            return
+        context = self._explanation.context_map
+        if context is not None and context.timeframe == timeframe:
+            self._chart.set_overlays(structure_to_overlays(context))
+            return
+        # Other context TF: analyze on the fly from current series.
+        if self._playback is None or self._session is None:
+            return
+        series = self._playback.series_for(timeframe)
+        self._chart.set_overlays(structure_to_overlays(analyze_series(series)))
 
     def _on_tf_clicked(self, timeframe: str) -> None:
         self._active_tf = timeframe
@@ -412,6 +460,40 @@ class MainWindow(QMainWindow):
         text = _OUTCOME_TEXT.get(outcome, outcome.value)
         self._phase_label.setText(text)
         self.statusBar().showMessage(f"Результат: {text}")
+
+        if self._session is not None:
+            if self._playback is not None:
+                execution = self._playback.series_for(
+                    self._settings.execution_timeframe
+                )
+                context_tf = (
+                    self._settings.context_timeframes[-1]
+                    if self._settings.context_timeframes
+                    else None
+                )
+                context = (
+                    self._playback.series_for(context_tf)
+                    if context_tf is not None
+                    else None
+                )
+            else:
+                execution = self._session.scenario.visible_execution
+                context = None
+
+            plan = self._playback.plan if self._playback is not None else None
+            explanation = build_explanation(
+                execution_series=execution,
+                context_series=context,
+                outcome=outcome,
+                plan=plan,
+            )
+            self._explanation = explanation
+            self._explain_view.setPlainText(explanation.text)
+            self._active_tf = self._settings.execution_timeframe
+            self._tf_buttons[self._active_tf].setChecked(True)
+            self._refresh_chart(fit=True)
+            self._chart.set_overlays(explanation.overlays)
+
         if outcome is TradeOutcome.AMBIGUOUS:
             QMessageBox.information(
                 self,
