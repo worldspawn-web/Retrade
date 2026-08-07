@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     symbol: str = "BTCUSDT"  # fallback / tests only
     top_symbols: int = 200
+    min_quote_volume_usd: float = 5_000_000.0
     symbol_cooldown: int = 10
     history_lookback_days: int = 400
     execution_timeframe: str = "15m"

@@ -36,12 +36,14 @@ class SymbolUniverse:
         base_url: str,
         cache_path: Path,
         top_n: int = 200,
+        min_quote_volume_usd: float = 5_000_000.0,
         ttl_s: int = 86_400,
         timeout_s: float = 30.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._cache_path = cache_path
         self._top_n = top_n
+        self._min_quote_volume_usd = min_quote_volume_usd
         self._ttl_s = ttl_s
         self._timeout = timeout_s
         self._symbols: list[str] = []
@@ -88,16 +90,31 @@ class SymbolUniverse:
                 quote_volume = float(row.get("quoteVolume", 0.0))
             except (TypeError, ValueError):
                 continue
+            if quote_volume < self._min_quote_volume_usd:
+                continue
             ranked.append((symbol, quote_volume))
 
         ranked.sort(key=lambda item: item[1], reverse=True)
         return [symbol for symbol, _ in ranked[: self._top_n]]
+
+    def _cache_meta_matches(self, raw: dict[str, object]) -> bool:
+        try:
+            top_n = int(raw.get("top_n", -1))  # type: ignore[arg-type]
+            min_vol = float(raw.get("min_quote_volume_usd", -1))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return (
+            top_n == self._top_n
+            and abs(min_vol - self._min_quote_volume_usd) < 1.0
+        )
 
     def _cache_expired(self) -> bool:
         if not self._cache_path.exists():
             return True
         try:
             raw = json.loads(self._cache_path.read_text(encoding="utf-8"))
+            if not self._cache_meta_matches(raw):
+                return True
             fetched_at = float(raw.get("fetched_at", 0))
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return True
@@ -106,12 +123,17 @@ class SymbolUniverse:
     def _load_cache(self, *, ignore_ttl: bool = False) -> bool:
         if not self._cache_path.exists():
             return False
-        if not ignore_ttl and self._cache_expired():
-            return False
         try:
             raw = json.loads(self._cache_path.read_text(encoding="utf-8"))
-            symbols = [str(s).upper() for s in raw.get("symbols", [])]
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return False
+        if not ignore_ttl and self._cache_expired():
+            return False
+        if not ignore_ttl and not self._cache_meta_matches(raw):
+            return False
+        try:
+            symbols = [str(s).upper() for s in raw.get("symbols", [])]
+        except (TypeError, ValueError):
             return False
         if not symbols:
             return False
@@ -122,6 +144,8 @@ class SymbolUniverse:
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "fetched_at": time.time(),
+            "top_n": self._top_n,
+            "min_quote_volume_usd": self._min_quote_volume_usd,
             "symbols": self._symbols,
         }
         self._cache_path.write_text(

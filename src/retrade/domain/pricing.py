@@ -4,13 +4,21 @@ from __future__ import annotations
 
 
 def price_decimals(price: float) -> int:
-    """Choose display/edit decimals from magnitude."""
+    """
+    Display decimals by magnitude.
+
+    Enough for sub-cent alts (0.015 → 5 dp), without noisy tails on BTC/ETH.
+    """
     abs_price = abs(price)
-    if abs_price >= 1000:
+    if abs_price >= 100:
         return 2
     if abs_price >= 1:
+        return 3
+    if abs_price >= 0.1:
         return 4
     if abs_price >= 0.01:
+        return 5
+    if abs_price >= 0.001:
         return 6
     return 8
 

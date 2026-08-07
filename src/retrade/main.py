@@ -39,6 +39,7 @@ def main() -> int:
         base_url=settings.binance_base_url,
         cache_path=settings.data_dir / "universe.json",
         top_n=settings.top_symbols,
+        min_quote_volume_usd=settings.min_quote_volume_usd,
     )
     history = RoundHistory(
         settings.data_dir / "round_history.json",

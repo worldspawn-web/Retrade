@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from retrade.chart.paths import chart_web_dir
 from retrade.domain.candles import Candle
+from retrade.domain.pricing import price_decimals
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +104,26 @@ class ChartWidget(QWidget):
         else:
             self._pending.append(action)
 
-    def set_candles(self, candles: list[Candle], *, fit: bool = True) -> None:
+    def set_candles(
+        self,
+        candles: list[Candle],
+        *,
+        fit: bool = True,
+        precision: int | None = None,
+    ) -> None:
         payload = [c.to_chart_dict() for c in candles]
         fit_js = "true" if fit else "false"
+        if precision is None and candles:
+            precision = price_decimals(candles[-1].close)
+        if precision is None:
+            precision = 2
         self._run(
-            f"window.retradeChart.setCandles({json.dumps(payload)}, {fit_js});"
+            "window.retradeChart.setCandles("
+            f"{json.dumps(payload)}, {fit_js}, {int(precision)});"
         )
+
+    def reset_view(self) -> None:
+        self._run("window.retradeChart.resetView();")
 
     def update_candle(self, candle: Candle) -> None:
         payload = json.dumps(candle.to_chart_dict())
