@@ -84,6 +84,8 @@ class MainWindow(QMainWindow):
         self._side: Side | None = None
         self._active_tf = settings.execution_timeframe
         self._plan_entry = 0.0
+        self._plan_tp = 0.0
+        self._plan_sl = 0.0
         self._explanation: Explanation | None = None
         self._current_symbol = settings.symbol
 
@@ -137,10 +139,10 @@ class MainWindow(QMainWindow):
         self._tp_spin = QDoubleSpinBox()
         self._sl_spin = QDoubleSpinBox()
         for spin in (self._tp_spin, self._sl_spin):
-            spin.setDecimals(2)
-            spin.setRange(0.01, 10_000_000.0)
+            spin.setDecimals(8)
+            spin.setRange(1e-12, 10_000_000.0)
             spin.setSingleStep(1.0)
-            spin.setGroupSeparatorShown(True)
+            spin.setGroupSeparatorShown(False)
             spin.valueChanged.connect(self._on_spin_changed)
         self._tp_spin.setPrefix("TP ")
         self._sl_spin.setPrefix("SL ")
@@ -336,6 +338,17 @@ class MainWindow(QMainWindow):
         # Always fit on TF change so price axis matches the new series range.
         self._refresh_chart(fit=True)
 
+    def _configure_price_spins(self, entry: float) -> None:
+        decimals = price_decimals(entry)
+        step = price_step(entry)
+        minimum = min(10 ** (-(decimals + 2)), entry / 1_000_000)
+        minimum = max(minimum, 1e-12)
+        maximum = max(entry * 1_000, 1.0)
+        for spin in (self._tp_spin, self._sl_spin):
+            spin.setDecimals(decimals)
+            spin.setRange(minimum, maximum)
+            spin.setSingleStep(step)
+
     def _on_side(self, side: Side) -> None:
         if self._session is None or self._phase not in {
             UiPhase.DECIDE,
@@ -346,13 +359,12 @@ class MainWindow(QMainWindow):
         entry = self._session.scenario.entry_price
         self._plan_entry = entry
         plan = default_plan(side, entry)
+        self._plan_tp = plan.take_profit
+        self._plan_sl = plan.stop_loss
         decimals = price_decimals(entry)
-        step = price_step(entry)
+        self._configure_price_spins(entry)
         self._tp_spin.blockSignals(True)
         self._sl_spin.blockSignals(True)
-        for spin in (self._tp_spin, self._sl_spin):
-            spin.setDecimals(decimals)
-            spin.setSingleStep(step)
         self._tp_spin.setValue(plan.take_profit)
         self._sl_spin.setValue(plan.stop_loss)
         self._tp_spin.blockSignals(False)
@@ -382,17 +394,19 @@ class MainWindow(QMainWindow):
         return TradePlan(
             side=self._side,
             entry=self._plan_entry,
-            take_profit=float(self._tp_spin.value()),
-            stop_loss=float(self._sl_spin.value()),
+            take_profit=self._plan_tp,
+            stop_loss=self._plan_sl,
         )
 
     def _on_spin_changed(self, _value: float) -> None:
         if self._phase is not UiPhase.PLACE_ORDERS or self._side is None:
             return
+        self._plan_tp = float(self._tp_spin.value())
+        self._plan_sl = float(self._sl_spin.value())
         self._chart.set_trade_levels(
             entry=self._plan_entry,
-            take_profit=float(self._tp_spin.value()),
-            stop_loss=float(self._sl_spin.value()),
+            take_profit=self._plan_tp,
+            stop_loss=self._plan_sl,
             editable=True,
         )
 
@@ -400,6 +414,9 @@ class MainWindow(QMainWindow):
         if self._phase is not UiPhase.PLACE_ORDERS:
             return
         self._plan_entry = entry
+        self._plan_tp = tp
+        self._plan_sl = sl
+        self._configure_price_spins(entry)
         self._tp_spin.blockSignals(True)
         self._sl_spin.blockSignals(True)
         self._tp_spin.setValue(tp)
@@ -420,16 +437,21 @@ class MainWindow(QMainWindow):
             return
 
         self._playback = self._session.start_trade(plan)
+        # Stay on the TF where the user confirmed (hit-detection still uses 15m).
+        if self._active_tf in self._tf_buttons:
+            self._tf_buttons[self._active_tf].setChecked(True)
+        self._refresh_chart(fit=True)
         self._chart.set_trade_levels(
             entry=plan.entry,
             take_profit=plan.take_profit,
             stop_loss=plan.stop_loss,
             editable=False,
         )
-        self._active_tf = self._settings.execution_timeframe
-        self._tf_buttons[self._active_tf].setChecked(True)
         self._set_phase(UiPhase.PLAYBACK)
-        self.statusBar().showMessage("Playback…")
+        self.statusBar().showMessage(
+            f"Playback… ({self._active_tf.upper()}, hits on "
+            f"{self._settings.execution_timeframe.upper()})"
+        )
         self._timer.start()
 
     def _on_playback_tick(self) -> None:
@@ -439,15 +461,23 @@ class MainWindow(QMainWindow):
 
         before = self._playback.shown_hidden
         result = self._playback.step()
-        # Update chart with newly revealed execution candle when on exec TF.
-        if (
+        use_update = (
             self._active_tf == self._settings.execution_timeframe
             and self._playback.shown_hidden > before
-        ):
+        )
+        # Exec TF: append bar. Higher TF: rebuild series (partial candle grows).
+        if use_update:
             candle = self._playback.scenario.hidden_execution[before]
             self._chart.update_candle(candle)
         else:
             self._refresh_chart(fit=False)
+            if self._playback.plan is not None:
+                self._chart.set_trade_levels(
+                    entry=self._playback.plan.entry,
+                    take_profit=self._playback.plan.take_profit,
+                    stop_loss=self._playback.plan.stop_loss,
+                    editable=False,
+                )
 
         if result is None:
             self.statusBar().showMessage(
@@ -493,10 +523,15 @@ class MainWindow(QMainWindow):
             )
             self._explanation = explanation
             self._debrief.show_explanation(explanation)
-            self._active_tf = self._settings.execution_timeframe
-            self._tf_buttons[self._active_tf].setChecked(True)
             self._refresh_chart(fit=True)
             self._chart.set_overlays(explanation.overlays)
+            if self._playback is not None and self._playback.plan is not None:
+                self._chart.set_trade_levels(
+                    entry=self._playback.plan.entry,
+                    take_profit=self._playback.plan.take_profit,
+                    stop_loss=self._playback.plan.stop_loss,
+                    editable=False,
+                )
 
         if outcome is TradeOutcome.AMBIGUOUS:
             QMessageBox.information(
@@ -522,7 +557,7 @@ class MainWindow(QMainWindow):
         self._tp_spin.setEnabled(place)
         self._sl_spin.setEnabled(place)
         for btn in self._tf_buttons.values():
-            btn.setEnabled(not loading)
+            btn.setEnabled(not loading and not playback)
 
         labels = {
             UiPhase.LOADING: "Loading…",

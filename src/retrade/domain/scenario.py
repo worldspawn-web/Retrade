@@ -7,7 +7,12 @@ import random
 import time
 from dataclasses import dataclass
 
-from retrade.domain.candles import Candle, CandleSeries, ensure_non_empty
+from retrade.domain.candles import (
+    Candle,
+    CandleSeries,
+    ensure_non_empty,
+    htf_series_with_partial,
+)
 from retrade.domain.market_data import MarketDataPort
 from retrade.domain.round_history import RoundHistory, RoundRecord
 from retrade.domain.scenario_score import ScoredDecision, pick_best_decision_index
@@ -55,7 +60,17 @@ class RoundScenario:
 
     def series_at_cursor(self, timeframe: str, cursor_ms: int) -> CandleSeries:
         series = self.series_by_tf[timeframe]
-        return series.visible_until(cursor_ms)
+        if timeframe == self.execution_timeframe:
+            return series.visible_until(cursor_ms)
+        interval_ms = TIMEFRAME_MS[timeframe]
+        execution = self.series_by_tf[self.execution_timeframe]
+        exec_until = tuple(c for c in execution.candles if c.close_time <= cursor_ms)
+        return htf_series_with_partial(
+            series,
+            exec_until,
+            cursor_ms=cursor_ms,
+            interval_ms=interval_ms,
+        )
 
 
 def pick_symbol(

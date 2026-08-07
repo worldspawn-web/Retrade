@@ -72,3 +72,48 @@ def slice_until_index(series: CandleSeries, end_exclusive: int) -> CandleSeries:
 def ensure_non_empty(candles: Sequence[Candle], *, context: str) -> None:
     if not candles:
         raise ValueError(f"Empty candle series: {context}")
+
+
+def floor_open_time(timestamp_ms: int, interval_ms: int) -> int:
+    """Align timestamp down to timeframe bucket start."""
+    return (timestamp_ms // interval_ms) * interval_ms
+
+
+def htf_series_with_partial(
+    htf: CandleSeries,
+    execution: Sequence[Candle],
+    *,
+    cursor_ms: int,
+    interval_ms: int,
+) -> CandleSeries:
+    """
+    Closed HTF candles up to cursor, plus an in-progress HTF bar aggregated
+    from execution TF so the last close matches the decision/entry price.
+    """
+    period_start = floor_open_time(
+        execution[-1].open_time if execution else cursor_ms,
+        interval_ms,
+    )
+    closed = tuple(
+        c
+        for c in htf.candles
+        if c.close_time <= cursor_ms and c.open_time < period_start
+    )
+    partial_src = [
+        c
+        for c in execution
+        if c.open_time >= period_start and c.close_time <= cursor_ms
+    ]
+    if not partial_src:
+        return CandleSeries(htf.symbol, htf.timeframe, closed)
+
+    partial = Candle(
+        open_time=period_start,
+        open=partial_src[0].open,
+        high=max(c.high for c in partial_src),
+        low=min(c.low for c in partial_src),
+        close=partial_src[-1].close,
+        volume=sum(c.volume for c in partial_src),
+        close_time=partial_src[-1].close_time,
+    )
+    return CandleSeries(htf.symbol, htf.timeframe, closed + (partial,))

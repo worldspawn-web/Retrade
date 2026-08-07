@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from retrade.domain.candles import Candle, CandleSeries
-from retrade.domain.scenario import RoundScenario
+from retrade.domain.candles import Candle, CandleSeries, htf_series_with_partial
+from retrade.domain.scenario import TIMEFRAME_MS, RoundScenario
 from retrade.domain.trading import TradeOutcome, TradePlan, TradeResult, evaluate_candle
 
 
@@ -39,7 +39,14 @@ class PlaybackState:
                 timeframe,
                 self.execution_candles,
             )
-        return self.scenario.series_at_cursor(timeframe, self.cursor_ms)
+        # Rebuild HTF with partial bar from revealed execution candles.
+        htf = self.scenario.series_by_tf[timeframe]
+        return htf_series_with_partial(
+            htf,
+            self.execution_candles,
+            cursor_ms=self.cursor_ms,
+            interval_ms=TIMEFRAME_MS[timeframe],
+        )
 
     def step(self) -> TradeResult | None:
         """Reveal next execution candle; return result when trade resolves."""
