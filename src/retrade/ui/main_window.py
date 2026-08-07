@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QStatusBar,
     QVBoxLayout,
@@ -38,6 +37,7 @@ from retrade.domain.trading import (
     default_plan,
 )
 from retrade.infra.binance import BinanceMarketData
+from retrade.ui.debrief_panel import DebriefPanel
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +87,7 @@ class MainWindow(QMainWindow):
         self._chart.ready.connect(self._on_chart_ready)
         self._chart.levels_changed.connect(self._on_levels_changed)
 
-        self._explain_view = QPlainTextEdit(self)
-        self._explain_view.setReadOnly(True)
-        self._explain_view.setObjectName("explainView")
-        self._explain_view.setPlaceholderText(
-            "После результата здесь появится разбор SMC…"
-        )
-        self._explain_view.setMinimumHeight(120)
-        self._explain_view.setMaximumHeight(180)
+        self._debrief = DebriefPanel(self)
 
         self._symbol_label = QLabel(settings.symbol)
         self._symbol_label.setObjectName("symbolLabel")
@@ -166,7 +159,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(8)
         root.addLayout(header)
         root.addWidget(self._chart, stretch=1)
-        root.addWidget(self._explain_view)
+        root.addWidget(self._debrief)
         root.addLayout(action_row)
 
         central = QWidget(self)
@@ -230,14 +223,6 @@ class MainWindow(QMainWindow):
                 padding: 6px;
                 min-width: 140px;
             }
-            QPlainTextEdit#explainView {
-                background-color: #131722;
-                border: 1px solid #2a2e39;
-                border-radius: 4px;
-                color: #d1d4dc;
-                padding: 8px;
-                font-size: 12px;
-            }
             QStatusBar {
                 background-color: #0f1219;
                 color: #787b86;
@@ -255,7 +240,7 @@ class MainWindow(QMainWindow):
         self._playback = None
         self._side = None
         self._explanation = None
-        self._explain_view.clear()
+        self._debrief.clear()
         self._chart.clear_overlays()
         self._set_phase(UiPhase.LOADING)
         self.statusBar().showMessage(
@@ -289,7 +274,9 @@ class MainWindow(QMainWindow):
         self._chart.clear_overlays()
         self._set_phase(UiPhase.DECIDE)
         self.statusBar().showMessage(
-            f"{scenario.symbol} | visible {len(scenario.visible_execution)} bars | "
+            f"{scenario.symbol} | score {scenario.score:.1f}"
+            f" [{', '.join(scenario.score_reasons) or '—'}] | "
+            f"visible {len(scenario.visible_execution)} | "
             f"hidden {len(scenario.hidden_execution)} | entry "
             f"{scenario.entry_price:.2f}"
         )
@@ -488,7 +475,7 @@ class MainWindow(QMainWindow):
                 plan=plan,
             )
             self._explanation = explanation
-            self._explain_view.setPlainText(explanation.text)
+            self._debrief.show_explanation(explanation)
             self._active_tf = self._settings.execution_timeframe
             self._tf_buttons[self._active_tf].setChecked(True)
             self._refresh_chart(fit=True)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from retrade.domain.candles import Candle, CandleSeries, ensure_non_empty
 from retrade.domain.market_data import MarketDataPort
+from retrade.domain.scenario_score import ScoredDecision, pick_best_decision_index
 
 TIMEFRAME_MS: dict[str, int] = {
     "1m": 60_000,
@@ -30,6 +31,8 @@ class RoundScenario:
     decision_index: int
     visible_execution: CandleSeries
     hidden_execution: tuple[Candle, ...]
+    score: float = 0.0
+    score_reasons: tuple[str, ...] = ()
 
     @property
     def entry_price(self) -> float:
@@ -55,9 +58,7 @@ def build_scenario(
     hidden_bars: int = 80,
 ) -> RoundScenario:
     """
-    Load multi-TF data and split execution series into visible / hidden.
-
-    Decision point is placed so that there is a playback tail of `hidden_bars`.
+    Load multi-TF data, pick an interesting decision point, split visible/hidden.
     """
     all_tfs = (execution_timeframe, *context_timeframes)
     series_by_tf: dict[str, CandleSeries] = {
@@ -69,19 +70,30 @@ def build_scenario(
     total = len(execution)
     if total < visible_bars + 10:
         visible_bars = max(50, total // 2)
-    hidden_bars = min(hidden_bars, max(1, total - visible_bars))
-    decision_index = total - hidden_bars
-    if decision_index < 30:
-        decision_index = max(30, total // 2)
-        hidden_bars = total - decision_index
+    hidden_bars = min(hidden_bars, max(1, total - 40))
 
-    visible = CandleSeries(
-        symbol,
-        execution_timeframe,
-        execution.candles[:decision_index],
+    picked: ScoredDecision = pick_best_decision_index(
+        execution,
+        visible_bars=visible_bars,
+        hidden_bars=hidden_bars,
     )
-    hidden = execution.candles[decision_index:]
-    ensure_non_empty(visible.candles, context="visible execution")
+    decision_index = picked.index
+
+    # Clamp so both visible lookback and hidden tail stay usable.
+    decision_index = min(decision_index, total - 8)
+    decision_index = max(decision_index, min(visible_bars, total - 8))
+    # Re-anchor visible window ending at decision.
+    start = max(0, decision_index - visible_bars)
+    visible_slice = execution.candles[start:decision_index]
+    hidden = execution.candles[decision_index : decision_index + hidden_bars]
+    if not hidden:
+        hidden = execution.candles[decision_index:]
+
+    ensure_non_empty(visible_slice, context="visible execution")
+    ensure_non_empty(hidden, context="hidden execution")
+
+    # Trim series_by_tf not required; full history kept for HTF cursor sync.
+    visible = CandleSeries(symbol, execution_timeframe, visible_slice)
 
     return RoundScenario(
         symbol=symbol,
@@ -90,4 +102,6 @@ def build_scenario(
         decision_index=decision_index,
         visible_execution=visible,
         hidden_execution=hidden,
+        score=picked.score,
+        score_reasons=picked.reasons,
     )
