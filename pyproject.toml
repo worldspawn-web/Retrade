@@ -36,12 +36,18 @@ retrade = "retrade.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/retrade"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/retrade/chart/web" = "retrade/chart/web"
+
 [tool.hatch.build.targets.sdist]
 include = ["src/retrade", "tests", "README.md", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: hits live network APIs",
+]
 
 [tool.ruff]
 target-version = "py311"
