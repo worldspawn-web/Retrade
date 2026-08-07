@@ -16,6 +16,7 @@ class MarketDataPort(Protocol):
         timeframe: str,
         *,
         limit: int = 1000,
+        end_time: int | None = None,
     ) -> CandleSeries:
-        """Return up to `limit` most recent candles, oldest first."""
+        """Return up to `limit` candles ending at end_time (or latest), oldest first."""
         ...

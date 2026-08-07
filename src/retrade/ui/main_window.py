@@ -28,7 +28,9 @@ from retrade.domain.explanation import (
     structure_to_overlays,
 )
 from retrade.domain.playback import PlaybackState, RoundSession
-from retrade.domain.scenario import build_scenario
+from retrade.domain.pricing import price_decimals, price_step
+from retrade.domain.round_history import RoundHistory
+from retrade.domain.scenario import build_scenario, pick_symbol
 from retrade.domain.smc import analyze_series
 from retrade.domain.trading import (
     Side,
@@ -37,6 +39,7 @@ from retrade.domain.trading import (
     default_plan,
 )
 from retrade.infra.binance import BinanceMarketData
+from retrade.infra.symbol_universe import SymbolUniverse
 from retrade.ui.debrief_panel import DebriefPanel
 
 logger = logging.getLogger(__name__)
@@ -66,11 +69,15 @@ class MainWindow(QMainWindow):
         self,
         settings: Settings,
         market: BinanceMarketData,
+        universe: SymbolUniverse,
+        history: RoundHistory,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._settings = settings
         self._market = market
+        self._universe = universe
+        self._history = history
         self._session: RoundSession | None = None
         self._playback: PlaybackState | None = None
         self._phase = UiPhase.LOADING
@@ -78,8 +85,9 @@ class MainWindow(QMainWindow):
         self._active_tf = settings.execution_timeframe
         self._plan_entry = 0.0
         self._explanation: Explanation | None = None
+        self._current_symbol = settings.symbol
 
-        self.setWindowTitle(f"Retrade — {settings.symbol}")
+        self.setWindowTitle("Retrade")
         self.resize(1280, 800)
         self.setMinimumSize(960, 600)
 
@@ -243,18 +251,25 @@ class MainWindow(QMainWindow):
         self._debrief.clear()
         self._chart.clear_overlays()
         self._set_phase(UiPhase.LOADING)
-        self.statusBar().showMessage(
-            f"Loading {self._settings.symbol} candles from Binance…"
-        )
+        self.statusBar().showMessage("Selecting symbol and historical window…")
         QTimer.singleShot(0, self._load_scenario)
 
     def _load_scenario(self) -> None:
         try:
+            self._universe.ensure_loaded()
+            symbol = pick_symbol(self._universe, self._history)
+            self._current_symbol = symbol
+            self._symbol_label.setText(symbol)
+            self.setWindowTitle(f"Retrade — {symbol}")
+            self.statusBar().showMessage(f"Loading {symbol}…")
+
             scenario = build_scenario(
                 self._market,
-                symbol=self._settings.symbol,
+                symbol=symbol,
                 execution_timeframe=self._settings.execution_timeframe,
                 context_timeframes=self._settings.context_timeframes,
+                history=self._history,
+                history_lookback_days=self._settings.history_lookback_days,
             )
         except Exception as exc:  # noqa: BLE001 - show to user in prototype
             logger.exception("Failed to build scenario")
@@ -278,7 +293,7 @@ class MainWindow(QMainWindow):
             f" [{', '.join(scenario.score_reasons) or '—'}] | "
             f"visible {len(scenario.visible_execution)} | "
             f"hidden {len(scenario.hidden_execution)} | entry "
-            f"{scenario.entry_price:.2f}"
+            f"{scenario.entry_price:.{price_decimals(scenario.entry_price)}f}"
         )
 
     def _refresh_chart(self, *, fit: bool) -> None:
@@ -296,7 +311,7 @@ class MainWindow(QMainWindow):
                 )
         self._chart.set_candles(list(series.candles), fit=fit)
         self._chart.set_hud(
-            f"{self._settings.symbol}  {self._active_tf.upper()}"
+            f"{self._current_symbol}  {self._active_tf.upper()}"
         )
         if self._phase is UiPhase.RESULT and self._explanation is not None:
             self._apply_overlays_for_tf(self._active_tf)
@@ -331,15 +346,17 @@ class MainWindow(QMainWindow):
         entry = self._session.scenario.entry_price
         self._plan_entry = entry
         plan = default_plan(side, entry)
+        decimals = price_decimals(entry)
+        step = price_step(entry)
         self._tp_spin.blockSignals(True)
         self._sl_spin.blockSignals(True)
+        for spin in (self._tp_spin, self._sl_spin):
+            spin.setDecimals(decimals)
+            spin.setSingleStep(step)
         self._tp_spin.setValue(plan.take_profit)
         self._sl_spin.setValue(plan.stop_loss)
         self._tp_spin.blockSignals(False)
         self._sl_spin.blockSignals(False)
-        step = max(0.5, entry * 0.0005)
-        self._tp_spin.setSingleStep(step)
-        self._sl_spin.setSingleStep(step)
         self._chart.set_trade_levels(
             entry=entry,
             take_profit=plan.take_profit,
@@ -348,8 +365,8 @@ class MainWindow(QMainWindow):
         )
         self._set_phase(UiPhase.PLACE_ORDERS)
         self.statusBar().showMessage(
-            f"{side.value.upper()} @ {entry:.2f} — растяни TP/SL на графике или "
-            "измени значения, затем подтверди"
+            f"{side.value.upper()} @ {entry:.{decimals}f} — "
+            "растяни TP/SL на графике или измени значения, затем подтверди"
         )
 
     def _on_skip(self) -> None:

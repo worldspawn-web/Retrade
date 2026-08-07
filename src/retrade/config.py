@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Runtime settings. Symbol is parameterized for multi-coin later."""
+    """Runtime settings. Symbol pool is top-N USDT; fallback symbol for tests."""
 
     model_config = SettingsConfigDict(
         env_prefix="RETRADE_",
@@ -18,7 +18,10 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    symbol: str = "BTCUSDT"
+    symbol: str = "BTCUSDT"  # fallback / tests only
+    top_symbols: int = 200
+    symbol_cooldown: int = 10
+    history_lookback_days: int = 400
     execution_timeframe: str = "15m"
     context_timeframes: tuple[str, ...] = ("1h", "4h")
     data_dir: Path = Field(default_factory=lambda: Path("data"))

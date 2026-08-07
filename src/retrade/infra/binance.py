@@ -38,6 +38,7 @@ class BinanceMarketData:
         timeframe: str,
         *,
         limit: int = 1000,
+        end_time: int | None = None,
     ) -> CandleSeries:
         symbol = symbol.upper()
         if timeframe not in _SUPPORTED:
@@ -45,8 +46,16 @@ class BinanceMarketData:
         limit = max(1, min(limit, 1000))
 
         try:
-            remote = self._fetch(symbol, timeframe, limit=limit)
-            return self._cache.merge_and_save(symbol, timeframe, remote)
+            remote = self._fetch(
+                symbol,
+                timeframe,
+                limit=limit,
+                end_time=end_time,
+            )
+            # Only merge into rolling cache when fetching the live tip.
+            if end_time is None:
+                return self._cache.merge_and_save(symbol, timeframe, remote)
+            return remote
         except (httpx.HTTPError, OSError, ValueError) as exc:
             logger.warning("Binance fetch failed (%s); trying cache", exc)
             cached = self._cache.load(symbol, timeframe)
@@ -54,12 +63,35 @@ class BinanceMarketData:
                 raise RuntimeError(
                     f"No market data for {symbol} {timeframe}: {exc}"
                 ) from exc
-            candles = cached.candles[-limit:]
+            if end_time is not None:
+                candles = tuple(
+                    c for c in cached.candles if c.open_time <= end_time
+                )[-limit:]
+            else:
+                candles = cached.candles[-limit:]
+            if not candles:
+                raise RuntimeError(
+                    f"No cached candles for {symbol} {timeframe} at {end_time}"
+                ) from exc
             return CandleSeries(symbol, timeframe, candles)
 
-    def _fetch(self, symbol: str, timeframe: str, *, limit: int) -> CandleSeries:
+    def _fetch(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        limit: int,
+        end_time: int | None,
+    ) -> CandleSeries:
         url = f"{self._base_url}/api/v3/klines"
-        params = {"symbol": symbol, "interval": timeframe, "limit": limit}
+        params: dict[str, int | str] = {
+            "symbol": symbol,
+            "interval": timeframe,
+            "limit": limit,
+        }
+        if end_time is not None:
+            params["endTime"] = int(end_time)
+
         with httpx.Client(timeout=self._timeout) as client:
             response = client.get(url, params=params)
             response.raise_for_status()
