@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
     def _on_tf_clicked(self, timeframe: str) -> None:
         self._active_tf = timeframe
         self._refresh_chart(fit=True)
+        self._chart.reset_view()
 
     def _on_side(self, side: Side) -> None:
         if self._session is None or self._phase not in {
