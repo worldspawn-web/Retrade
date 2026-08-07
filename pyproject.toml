@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "retrade"
+version = "0.1.0"
+description = "Retrade — SMC trading simulator trainer for Windows"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Retrade" }]
+dependencies = [
+    "PySide6>=6.6",
+    "PySide6-Addons>=6.6",
+    "httpx>=0.27",
+    "pandas>=2.2",
+    "pyarrow>=15.0",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "ruff>=0.4",
+    "mypy>=1.9",
+    "pandas-stubs>=2.2",
+    "pyinstaller>=6.5",
+]
+
+[project.scripts]
+retrade = "retrade.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/retrade"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/retrade", "tests", "README.md", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "SIM", # flake8-simplify
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["retrade"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+packages = ["retrade"]
+
+[[tool.mypy.overrides]]
+module = [
+    "PySide6.*",
+]
+ignore_missing_imports = true
