@@ -284,9 +284,8 @@ class MainWindow(QMainWindow):
         self._session = RoundSession(scenario=scenario)
         self._active_tf = self._settings.execution_timeframe
         self._tf_buttons[self._active_tf].setChecked(True)
+        # fit=True recreates the series in JS (drops previous price scale).
         self._refresh_chart(fit=True)
-        self._chart.clear_trade_levels()
-        self._chart.clear_overlays()
         self._set_phase(UiPhase.DECIDE)
         self.statusBar().showMessage(
             f"{scenario.symbol} | score {scenario.score:.1f}"
@@ -334,8 +333,8 @@ class MainWindow(QMainWindow):
 
     def _on_tf_clicked(self, timeframe: str) -> None:
         self._active_tf = timeframe
+        # Always fit on TF change so price axis matches the new series range.
         self._refresh_chart(fit=True)
-        self._chart.reset_view()
 
     def _on_side(self, side: Side) -> None:
         if self._session is None or self._phase not in {

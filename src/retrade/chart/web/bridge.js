@@ -25,6 +25,7 @@
       borderColor: "#2a2e39",
       scaleMargins: { top: 0.08, bottom: 0.12 },
       autoScale: true,
+      mode: 0,
     },
     timeScale: {
       borderColor: "#2a2e39",
@@ -44,23 +45,11 @@
     },
   });
 
-  const candleSeries = chart.addCandlestickSeries({
-    upColor: "#26a69a",
-    downColor: "#ef5350",
-    borderVisible: false,
-    wickUpColor: "#26a69a",
-    wickDownColor: "#ef5350",
-    priceFormat: {
-      type: "price",
-      precision: 2,
-      minMove: 0.01,
-    },
-  });
-
+  let candleSeries = null;
   let entryLine = null;
   let tpLine = null;
   let slLine = null;
-  let dragTarget = null; // "tp" | "sl" | null
+  let dragTarget = null;
   let levelsEditable = false;
   let currentLevels = { entry: null, tp: null, sl: null };
   let overlayPriceLines = [];
@@ -114,58 +103,48 @@
     return value.toFixed(pricePrecision);
   }
 
-  function applyPriceFormat(precision) {
-    pricePrecision = Math.max(0, Math.min(10, precision | 0));
-    const minMove = Math.pow(10, -pricePrecision);
-    candleSeries.applyOptions({
+  function candleSeriesOptions() {
+    return {
+      upColor: "#26a69a",
+      downColor: "#ef5350",
+      borderVisible: false,
+      wickUpColor: "#26a69a",
+      wickDownColor: "#ef5350",
       priceFormat: {
         type: "price",
         precision: pricePrecision,
-        minMove: minMove,
+        minMove: Math.pow(10, -pricePrecision),
       },
-    });
-  }
-
-  function computePriceRange(data) {
-    let lo = data[0].low;
-    let hi = data[0].high;
-    for (let i = 1; i < data.length; i++) {
-      if (data[i].low < lo) {
-        lo = data[i].low;
-      }
-      if (data[i].high > hi) {
-        hi = data[i].high;
-      }
-    }
-    const span = hi - lo;
-    const pad =
-      span > 0
-        ? span * 0.1
-        : Math.max(Math.abs(lo) * 0.02, Math.pow(10, -pricePrecision));
-    return {
-      minValue: lo - pad,
-      maxValue: hi + pad,
+      lastValueVisible: true,
+      priceLineVisible: false,
     };
   }
 
-  function resetView(candles) {
-    if (candles && candles.length) {
-      lastCandles = candles;
+  function createCandleSeries() {
+    return chart.addCandlestickSeries(candleSeriesOptions());
+  }
+
+  function applyPriceFormat(precision) {
+    pricePrecision = Math.max(0, Math.min(10, precision | 0));
+    if (candleSeries) {
+      candleSeries.applyOptions({
+        priceFormat: {
+          type: "price",
+          precision: pricePrecision,
+          minMove: Math.pow(10, -pricePrecision),
+        },
+      });
     }
-    chart.timeScale().fitContent();
-    candleSeries.applyOptions({
-      autoscaleInfoProvider: function () {
-        if (!lastCandles.length) {
-          return null;
-        }
-        return { priceRange: computePriceRange(lastCandles) };
-      },
-    });
-    // Re-fit so the provider is applied to the current viewport.
-    chart.timeScale().fitContent();
   }
 
   function clearTradeLines() {
+    if (!candleSeries) {
+      entryLine = null;
+      tpLine = null;
+      slLine = null;
+      currentLevels = { entry: null, tp: null, sl: null };
+      return;
+    }
     if (entryLine) {
       candleSeries.removePriceLine(entryLine);
       entryLine = null;
@@ -182,20 +161,72 @@
   }
 
   function clearOverlays() {
-    overlayPriceLines.forEach(function (line) {
-      candleSeries.removePriceLine(line);
-    });
+    if (candleSeries) {
+      overlayPriceLines.forEach(function (line) {
+        try {
+          candleSeries.removePriceLine(line);
+        } catch (e) {
+          /* series may already be gone */
+        }
+      });
+      try {
+        candleSeries.setMarkers([]);
+      } catch (e) {
+        /* ignore */
+      }
+    }
     overlayPriceLines = [];
     overlayZoneSeries.forEach(function (series) {
-      chart.removeSeries(series);
+      try {
+        chart.removeSeries(series);
+      } catch (e) {
+        /* ignore */
+      }
     });
     overlayZoneSeries = [];
-    candleSeries.setMarkers([]);
+  }
+
+  /**
+   * Hard reset: drop candle series + overlays so a prior BTC scale cannot
+   * pin the axis when loading a $0.02 alt (and vice versa).
+   */
+  function hardResetSeries(precision) {
+    clearTradeLines();
+    clearOverlays();
+    levelsEditable = false;
+    if (candleSeries) {
+      try {
+        chart.removeSeries(candleSeries);
+      } catch (e) {
+        /* ignore */
+      }
+      candleSeries = null;
+    }
+    if (precision != null) {
+      pricePrecision = Math.max(0, Math.min(10, precision | 0));
+    }
+    // Unlock price scale after user pan/zoom (autoScale may have been turned off).
+    chart.priceScale("right").applyOptions({
+      autoScale: true,
+      mode: 0,
+      scaleMargins: { top: 0.08, bottom: 0.12 },
+    });
+    candleSeries = createCandleSeries();
+  }
+
+  function fitTimeAndPrice() {
+    chart.timeScale().fitContent();
+    chart.priceScale("right").applyOptions({ autoScale: true });
+    // Second fit after layout tick helps LWC recompute price range.
+    window.requestAnimationFrame(function () {
+      chart.timeScale().fitContent();
+      chart.priceScale("right").applyOptions({ autoScale: true });
+    });
   }
 
   function setOverlays(payload) {
     clearOverlays();
-    if (!payload) {
+    if (!payload || !candleSeries) {
       return;
     }
     const markers = payload.markers || [];
@@ -214,6 +245,11 @@
     });
 
     (payload.zones || []).forEach(function (zone) {
+      const fmt = {
+        type: "price",
+        precision: pricePrecision,
+        minMove: Math.pow(10, -pricePrecision),
+      };
       const top = chart.addLineSeries({
         color: zone.borderColor || "#26a69a",
         lineWidth: 1,
@@ -221,11 +257,7 @@
         lastValueVisible: false,
         priceLineVisible: false,
         crosshairMarkerVisible: false,
-        priceFormat: {
-          type: "price",
-          precision: pricePrecision,
-          minMove: Math.pow(10, -pricePrecision),
-        },
+        priceFormat: fmt,
       });
       const bottom = chart.addLineSeries({
         color: zone.borderColor || "#26a69a",
@@ -234,11 +266,7 @@
         lastValueVisible: false,
         priceLineVisible: false,
         crosshairMarkerVisible: false,
-        priceFormat: {
-          type: "price",
-          precision: pricePrecision,
-          minMove: Math.pow(10, -pricePrecision),
-        },
+        priceFormat: fmt,
       });
       const t1 = zone.timeFrom;
       const t2 = zone.timeTo;
@@ -269,7 +297,7 @@
   function setTradeLevels(levels, editable) {
     clearTradeLines();
     levelsEditable = !!editable;
-    if (!levels) {
+    if (!levels || !candleSeries) {
       return;
     }
     currentLevels = {
@@ -289,7 +317,7 @@
   }
 
   function hitPriceLine(y, price) {
-    if (price == null) {
+    if (!candleSeries || price == null) {
       return false;
     }
     const lineY = candleSeries.priceToCoordinate(price);
@@ -299,8 +327,10 @@
     return Math.abs(lineY - y) <= HIT_PX;
   }
 
+  candleSeries = createCandleSeries();
+
   chart.subscribeCrosshairMove(function (param) {
-    if (!param || param.point === undefined || !param.time) {
+    if (!param || param.point === undefined || !param.time || !candleSeries) {
       return;
     }
     const data = param.seriesData.get(candleSeries);
@@ -343,7 +373,7 @@
   container.addEventListener(
     "mousemove",
     function (ev) {
-      if (!dragTarget) {
+      if (!dragTarget || !candleSeries) {
         return;
       }
       const rect = container.getBoundingClientRect();
@@ -389,20 +419,27 @@
 
   window.retradeChart = {
     setCandles: function (candles, fit, precision) {
-      if (precision != null) {
+      const shouldFit = fit !== false;
+      if (shouldFit) {
+        // Atomic reset in one JS turn: kills old series/overlays/scale lock.
+        hardResetSeries(precision);
+      } else if (precision != null) {
         applyPriceFormat(precision);
       }
       lastCandles = candles || [];
+      if (!candleSeries) {
+        candleSeries = createCandleSeries();
+      }
       candleSeries.setData(lastCandles);
-      if (fit !== false) {
-        resetView(lastCandles);
+      if (shouldFit) {
+        fitTimeAndPrice();
       }
     },
     updateCandle: function (candle) {
-      candleSeries.update(candle);
-      if (!candle) {
+      if (!candleSeries || !candle) {
         return;
       }
+      candleSeries.update(candle);
       if (
         lastCandles.length &&
         lastCandles[lastCandles.length - 1].time === candle.time
@@ -413,10 +450,26 @@
       }
     },
     resetView: function () {
-      resetView(lastCandles);
+      if (!lastCandles.length) {
+        return;
+      }
+      // Recreate around the same data to drop a stuck manual price scale.
+      const preserved = lastCandles.slice();
+      const levels = currentLevels;
+      const editable = levelsEditable;
+      hardResetSeries(pricePrecision);
+      lastCandles = preserved;
+      candleSeries.setData(lastCandles);
+      fitTimeAndPrice();
+      if (levels.entry != null || levels.tp != null || levels.sl != null) {
+        setTradeLevels(levels, editable);
+      }
     },
     setTradeLevels: setTradeLevels,
-    clearTradeLevels: clearTradeLines,
+    clearTradeLevels: function () {
+      clearTradeLines();
+      levelsEditable = false;
+    },
     setOverlays: setOverlays,
     clearOverlays: clearOverlays,
     setHud: function (text) {
