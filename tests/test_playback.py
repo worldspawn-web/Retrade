@@ -134,6 +134,65 @@ def test_hold_after_n_bars_without_hit() -> None:
     assert state.finished
 
 
+def test_multiple_keeps_do_not_auto_close_early() -> None:
+    """Long tail: several HOLD/KEEP cycles without exhausting data."""
+    hidden = tuple(_c(i, h=100.6, low=100.0, c=100.4) for i in range(10, 220))
+    visible = CandleSeries("BTCUSDT", "15m", tuple(_c(i) for i in range(10)))
+    full = CandleSeries("BTCUSDT", "15m", visible.candles + hidden)
+    scenario = RoundScenario(
+        symbol="BTCUSDT",
+        execution_timeframe="15m",
+        series_by_tf={"15m": full},
+        decision_index=10,
+        visible_execution=visible,
+        hidden_execution=hidden,
+    )
+    entry = scenario.entry_price
+    plan = TradePlan(
+        Side.LONG,
+        entry=entry,
+        take_profit=entry + 100.0,
+        stop_loss=entry - 100.0,
+    )
+    state = PlaybackState(scenario=scenario, plan=plan)
+    holds = 0
+    while holds < 3:
+        result = state.step(hold_check_bars=32)
+        if result is None:
+            continue
+        assert result.hold is True
+        assert state.finished is False
+        holds += 1
+        state.continue_after_hold()
+    assert holds == 3
+    assert state.shown_hidden == 96
+    assert len(scenario.hidden_execution) > 96
+
+
+def test_pretrade_advance_then_start_trade() -> None:
+    session = RoundSession(scenario=_scenario())
+    base_entry = session.entry_price
+    candle = session.advance_one()
+    assert candle is not None
+    assert session.revealed == 1
+    assert session.entry_price == candle.close
+    assert session.entry_price != base_entry or candle.close == base_entry
+
+    plan = TradePlan(
+        Side.LONG,
+        entry=session.entry_price,
+        take_profit=session.entry_price + 1.0,
+        stop_loss=session.entry_price - 2.0,
+    )
+    playback = session.start_trade(plan)
+    assert playback.shown_hidden == 1
+    assert playback.hold_anchor == 1
+    # Next step evaluates the second hidden bar (index 1)
+    result = playback.step(hold_check_bars=32)
+    assert result is not None
+    assert result.outcome is TradeOutcome.TAKE_PROFIT
+
+
 def test_reveal_only_after_finish() -> None:
     exec_candles = tuple(_c(i) for i in range(20))
     hidden = tuple(_c(i, h=100.2, low=99.8, c=100.0) for i in range(10, 16))
