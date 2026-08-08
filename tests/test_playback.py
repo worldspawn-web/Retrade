@@ -93,3 +93,80 @@ def test_htf_sync_uses_cursor() -> None:
     # Before any reveal, cursor is last visible close_time
     series = state.series_for("1h")
     assert all(c.close_time <= state.cursor_ms for c in series.candles)
+
+
+def test_hold_after_n_bars_without_hit() -> None:
+    exec_candles = tuple(_c(i) for i in range(40))
+    hidden = tuple(_c(i, h=100.6, low=100.0, c=100.4) for i in range(10, 42))
+    visible = CandleSeries("BTCUSDT", "15m", exec_candles[:10])
+    full = CandleSeries("BTCUSDT", "15m", exec_candles[:10] + hidden)
+    scenario = RoundScenario(
+        symbol="BTCUSDT",
+        execution_timeframe="15m",
+        series_by_tf={"15m": full},
+        decision_index=10,
+        visible_execution=visible,
+        hidden_execution=hidden,
+    )
+    entry = scenario.entry_price
+    plan = TradePlan(
+        Side.LONG,
+        entry=entry,
+        take_profit=entry + 50.0,
+        stop_loss=entry - 50.0,
+    )
+    state = PlaybackState(scenario=scenario, plan=plan)
+    hold = None
+    for _ in range(4):
+        hold = state.step(hold_check_bars=4)
+        if hold is not None:
+            break
+    assert hold is not None
+    assert hold.hold is True
+    assert state.shown_hidden == 4
+    assert state.finished is False
+
+    state.continue_after_hold()
+    assert state.step(hold_check_bars=4) is None
+
+    result = state.exit_at_market()
+    assert result.outcome is TradeOutcome.EXIT
+    assert state.finished
+
+
+def test_reveal_only_after_finish() -> None:
+    exec_candles = tuple(_c(i) for i in range(20))
+    hidden = tuple(_c(i, h=100.2, low=99.8, c=100.0) for i in range(10, 16))
+    # First hidden bar hits TP
+    hidden = (
+        _c(10, h=103.0, low=100.0, c=102.0),
+        *hidden[1:],
+    )
+    visible = CandleSeries("BTCUSDT", "15m", exec_candles[:10])
+    full = CandleSeries("BTCUSDT", "15m", exec_candles[:10] + hidden)
+    scenario = RoundScenario(
+        symbol="BTCUSDT",
+        execution_timeframe="15m",
+        series_by_tf={"15m": full},
+        decision_index=10,
+        visible_execution=visible,
+        hidden_execution=hidden,
+    )
+    entry = scenario.entry_price
+    plan = TradePlan(
+        Side.LONG,
+        entry=entry,
+        take_profit=entry + 1.0,
+        stop_loss=entry - 2.0,
+    )
+    state = PlaybackState(scenario=scenario, plan=plan)
+    result = state.step()
+    assert result is not None
+    assert result.outcome is TradeOutcome.TAKE_PROFIT
+    assert state.finished
+    assert state.shown_hidden == 1
+    candle = state.reveal_only()
+    assert candle is not None
+    assert state.shown_hidden == 2
+    assert state.finished  # still finished; no re-score
+
