@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default_factory=lambda: Path("data"))
     binance_base_url: str = "https://api.binance.com"
     playback_interval_ms: int = 400
+    hold_check_bars: int = 32
 
 
 def get_settings() -> Settings:

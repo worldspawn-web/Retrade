@@ -38,6 +38,7 @@ packages = ["src/retrade"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/retrade/chart/web" = "retrade/chart/web"
+"src/retrade/ui/assets" = "retrade/ui/assets"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/retrade", "tests", "README.md", "pyproject.toml"]

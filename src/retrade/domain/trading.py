@@ -19,6 +19,7 @@ class TradeOutcome(StrEnum):
     AMBIGUOUS = "ambiguous"
     SKIP = "skip"
     OPEN = "open"
+    EXIT = "exit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +41,7 @@ class TradePlan:
 class TradeResult:
     outcome: TradeOutcome
     candle: Candle | None = None
+    hold: bool = False
 
 
 def evaluate_candle(plan: TradePlan, candle: Candle) -> TradeOutcome:

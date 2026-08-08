@@ -32,6 +32,10 @@ class PlaybackState:
         revealed = self.scenario.hidden_execution[: self.shown_hidden]
         return visible + revealed
 
+    @property
+    def can_reveal_more(self) -> bool:
+        return self.shown_hidden < len(self.scenario.hidden_execution)
+
     def series_for(self, timeframe: str) -> CandleSeries:
         if timeframe == self.scenario.execution_timeframe:
             return CandleSeries(
@@ -48,8 +52,8 @@ class PlaybackState:
             interval_ms=TIMEFRAME_MS[timeframe],
         )
 
-    def step(self) -> TradeResult | None:
-        """Reveal next execution candle; return result when trade resolves."""
+    def step(self, *, hold_check_bars: int = 32) -> TradeResult | None:
+        """Reveal next execution candle; return result when trade resolves or HOLD."""
         if self.finished:
             return TradeResult(self.outcome, self.result_candle)
 
@@ -66,13 +70,44 @@ class PlaybackState:
         candle = self.scenario.hidden_execution[self.shown_hidden]
         self.shown_hidden += 1
         outcome = evaluate_candle(self.plan, candle)
-        if outcome is TradeOutcome.OPEN:
-            return None
+        if outcome is not TradeOutcome.OPEN:
+            self.finished = True
+            self.outcome = outcome
+            self.result_candle = candle
+            return TradeResult(outcome, candle)
 
+        if (
+            hold_check_bars > 0
+            and self.shown_hidden % hold_check_bars == 0
+        ):
+            return TradeResult(TradeOutcome.OPEN, candle, hold=True)
+        return None
+
+    def exit_at_market(self) -> TradeResult:
+        """Close at the last revealed candle close (manual EXIT)."""
+        if self.finished:
+            return TradeResult(self.outcome, self.result_candle)
+        if self.plan is None or self.shown_hidden <= 0:
+            self.finished = True
+            self.outcome = TradeOutcome.EXIT
+            return TradeResult(TradeOutcome.EXIT)
+
+        candle = self.scenario.hidden_execution[self.shown_hidden - 1]
         self.finished = True
-        self.outcome = outcome
+        self.outcome = TradeOutcome.EXIT
         self.result_candle = candle
-        return TradeResult(outcome, candle)
+        return TradeResult(TradeOutcome.EXIT, candle)
+
+    def continue_after_hold(self) -> None:
+        """Resume after KEEP — no state change; next step continues the tail."""
+
+    def reveal_only(self) -> Candle | None:
+        """Post-result: reveal one more bar without re-scoring TP/SL."""
+        if not self.can_reveal_more:
+            return None
+        candle = self.scenario.hidden_execution[self.shown_hidden]
+        self.shown_hidden += 1
+        return candle
 
 
 @dataclass

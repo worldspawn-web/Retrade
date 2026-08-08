@@ -10,6 +10,7 @@ from retrade.domain.smc import (
     Bias,
     BreakKind,
     StructureEventKind,
+    StructureLevel,
     StructureMap,
     analyze_series,
 )
@@ -52,6 +53,9 @@ def build_explanation(
     context_series: CandleSeries | None,
     outcome: TradeOutcome,
     plan: TradePlan | None,
+    show_bos: bool = True,
+    show_fvg: bool = True,
+    show_levels: bool = False,
 ) -> Explanation:
     """Analyze revealed price action into a compact visual debrief."""
     execution_map = analyze_series(execution_series)
@@ -115,55 +119,108 @@ def build_explanation(
             )
         )
 
+    ref_price = plan.entry if plan is not None else None
+    if ref_price is None and execution_series.candles:
+        ref_price = execution_series.candles[-1].close
+
     return Explanation(
         outcome=outcome,
         headline=_headline(outcome, plan),
         chips=tuple(chips),
         note=_short_note(outcome, plan, execution_map),
-        overlays=structure_to_overlays(execution_map),
+        overlays=structure_to_overlays(
+            execution_map,
+            show_bos=show_bos,
+            show_fvg=show_fvg,
+            show_levels=show_levels,
+            ref_price=ref_price,
+        ),
         execution_map=execution_map,
         context_map=context_map,
     )
 
 
-def structure_to_overlays(structure: StructureMap) -> dict[str, Any]:
-    """Chart overlays: BOS/CHoCH markers + open FVG zones. No S/R lines."""
+def structure_to_overlays(
+    structure: StructureMap,
+    *,
+    show_bos: bool = True,
+    show_fvg: bool = True,
+    show_levels: bool = False,
+    ref_price: float | None = None,
+    max_levels: int = 2,
+) -> dict[str, Any]:
+    """Retrade overlays: BOS/CHoCH, FVG zones, 1–2 nearest levels."""
     markers: list[dict[str, Any]] = []
-    for event in structure.events[-20:]:
-        bullish = event.bias is Bias.BULLISH
-        label = "BOS" if event.kind is StructureEventKind.BOS else "CHoCH"
-        markers.append(
-            {
-                "time": event.time_sec,
-                "position": "belowBar" if bullish else "aboveBar",
-                "color": "#26a69a" if bullish else "#ef5350",
-                "shape": "arrowUp" if bullish else "arrowDown",
-                "text": label,
-            }
-        )
+    if show_bos:
+        for event in structure.events[-20:]:
+            bullish = event.bias is Bias.BULLISH
+            label = "BOS" if event.kind is StructureEventKind.BOS else "CHoCH"
+            markers.append(
+                {
+                    "time": event.time_sec,
+                    "position": "belowBar" if bullish else "aboveBar",
+                    "color": "#26a69a" if bullish else "#ef5350",
+                    "shape": "arrowUp" if bullish else "arrowDown",
+                    "text": label,
+                }
+            )
 
     zones: list[dict[str, Any]] = []
-    for gap in structure.fvgs[-10:]:
-        if gap.mitigated:
-            continue
-        bullish = gap.bias is Bias.BULLISH
-        zones.append(
-            {
-                "timeFrom": gap.time_from_sec,
-                "timeTo": gap.time_to_sec,
-                "priceTop": gap.top,
-                "priceBottom": gap.bottom,
-                "color": (
-                    "rgba(38, 166, 154, 0.18)"
-                    if bullish
-                    else "rgba(239, 83, 80, 0.18)"
-                ),
-                "borderColor": "#26a69a" if bullish else "#ef5350",
-                "title": "FVG",
-            }
-        )
+    if show_fvg:
+        for gap in structure.fvgs[-10:]:
+            if gap.mitigated:
+                continue
+            bullish = gap.bias is Bias.BULLISH
+            zones.append(
+                {
+                    "timeFrom": gap.time_from_sec,
+                    "timeTo": gap.time_to_sec,
+                    "priceTop": gap.top,
+                    "priceBottom": gap.bottom,
+                    "color": (
+                        "rgba(38, 166, 154, 0.18)"
+                        if bullish
+                        else "rgba(239, 83, 80, 0.18)"
+                    ),
+                    "borderColor": "#26a69a" if bullish else "#ef5350",
+                    "title": "FVG",
+                }
+            )
 
-    return {"markers": markers, "levels": [], "zones": zones}
+    levels_payload: list[dict[str, Any]] = []
+    if show_levels:
+        chosen = nearest_levels(
+            structure.levels,
+            ref_price=ref_price,
+            limit=max_levels,
+        )
+        for level in chosen:
+            levels_payload.append(
+                {
+                    "price": level.price,
+                    "color": "#f0b90b",
+                    "lineWidth": 1,
+                    "lineStyle": 2,
+                    "title": "LVL",
+                }
+            )
+
+    return {"markers": markers, "levels": levels_payload, "zones": zones}
+
+
+def nearest_levels(
+    levels: tuple[StructureLevel, ...],
+    *,
+    ref_price: float | None,
+    limit: int = 2,
+) -> tuple[StructureLevel, ...]:
+    """Pick up to `limit` structure levels closest to ref_price."""
+    if not levels or limit <= 0:
+        return ()
+    if ref_price is None:
+        return levels[-limit:]
+    ranked = sorted(levels, key=lambda lv: abs(lv.price - ref_price))
+    return tuple(ranked[:limit])
 
 
 def _headline(outcome: TradeOutcome, plan: TradePlan | None) -> str:
@@ -174,6 +231,7 @@ def _headline(outcome: TradeOutcome, plan: TradePlan | None) -> str:
         TradeOutcome.AMBIGUOUS: "DRAW",
         TradeOutcome.SKIP: "SKIP",
         TradeOutcome.OPEN: "NO HIT",
+        TradeOutcome.EXIT: "EXIT",
     }
     return f"{titles.get(outcome, outcome.value.upper())}{side}"
 
@@ -189,6 +247,8 @@ def _short_note(
         return "Ордер не выставлялся"
     if outcome is TradeOutcome.OPEN:
         return "Хвост без касания ордеров"
+    if outcome is TradeOutcome.EXIT:
+        return "Закрытие по рынку"
     if plan is None:
         return ""
 
@@ -215,6 +275,7 @@ def _outcome_short(outcome: TradeOutcome) -> str:
         TradeOutcome.AMBIGUOUS: "DRAW",
         TradeOutcome.SKIP: "SKIP",
         TradeOutcome.OPEN: "—",
+        TradeOutcome.EXIT: "EXIT",
     }.get(outcome, outcome.value.upper())
 
 
@@ -225,6 +286,7 @@ def _outcome_tone(outcome: TradeOutcome) -> str:
         TradeOutcome.AMBIGUOUS: "warn",
         TradeOutcome.SKIP: "neutral",
         TradeOutcome.OPEN: "neutral",
+        TradeOutcome.EXIT: "accent",
     }.get(outcome, "neutral")
 
 

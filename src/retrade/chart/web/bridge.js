@@ -421,7 +421,6 @@
     setCandles: function (candles, fit, precision) {
       const shouldFit = fit !== false;
       if (shouldFit) {
-        // Atomic reset in one JS turn: kills old series/overlays/scale lock.
         hardResetSeries(precision);
       } else if (precision != null) {
         applyPriceFormat(precision);
