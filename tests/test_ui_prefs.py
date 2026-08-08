@@ -23,6 +23,17 @@ def test_ui_prefs_default_off(tmp_path: Path) -> None:
     assert store.prefs.indicators.bos.show_labels is True
     assert store.prefs.indicators.bos.label_size == 1.0
     assert store.prefs.indicators.bos.icon == "circle"
+    assert store.prefs.sounds_enabled is True
+
+
+def test_sounds_enabled_persist(tmp_path: Path) -> None:
+    path = tmp_path / "ui_prefs.json"
+    store = UiPrefsStore(path)
+    store.set_sounds_enabled(False)
+    again = UiPrefsStore(path)
+    assert again.prefs.sounds_enabled is False
+    again.set_sounds_enabled(True)
+    assert UiPrefsStore(path).prefs.sounds_enabled is True
 
 
 def test_ui_prefs_persist(tmp_path: Path) -> None:
