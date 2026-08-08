@@ -16,6 +16,10 @@ from retrade.domain.smc import (
     analyze_series,
 )
 from retrade.domain.trading import Side, TradeOutcome, TradePlan
+from retrade.domain.ui_prefs import (
+    IndicatorPrefs,
+    line_style_code,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,12 +58,15 @@ def build_explanation(
     context_series: CandleSeries | None,
     outcome: TradeOutcome,
     plan: TradePlan | None,
-    show_bos: bool = True,
-    show_fvg: bool = True,
-    show_levels: bool = False,
-    show_swings: bool = False,
+    prefs: IndicatorPrefs | None = None,
 ) -> Explanation:
     """Analyze revealed price action into a compact visual debrief."""
+    prefs = prefs or IndicatorPrefs(
+        show_bos=True,
+        show_fvg=True,
+        show_levels=False,
+        show_swings=False,
+    )
     execution_map = analyze_series(execution_series, swing_strength=2)
     context_map = (
         analyze_series(context_series, swing_strength=2)
@@ -136,10 +143,7 @@ def build_explanation(
         note=_short_note(outcome, plan, execution_map),
         overlays=structure_to_overlays(
             execution_map,
-            show_bos=show_bos,
-            show_fvg=show_fvg,
-            show_levels=show_levels,
-            show_swings=show_swings,
+            prefs=prefs,
             ref_price=ref_price,
         ),
         execution_map=execution_map,
@@ -150,43 +154,85 @@ def build_explanation(
 def structure_to_overlays(
     structure: StructureMap,
     *,
-    show_bos: bool = True,
-    show_fvg: bool = True,
-    show_levels: bool = False,
-    show_swings: bool = False,
+    prefs: IndicatorPrefs | None = None,
+    show_bos: bool | None = None,
+    show_fvg: bool | None = None,
+    show_levels: bool | None = None,
+    show_swings: bool | None = None,
     ref_price: float | None = None,
     max_levels: int = 2,
 ) -> dict[str, Any]:
-    """Retrade overlays: swings, BOS/CHoCH, FVG zones, 1–2 nearest levels."""
+    """Retrade overlays driven by indicator visibility + visual prefs."""
+    prefs = prefs or IndicatorPrefs()
+    use_bos = prefs.show_bos if show_bos is None else show_bos
+    use_fvg = prefs.show_fvg if show_fvg is None else show_fvg
+    use_levels = prefs.show_levels if show_levels is None else show_levels
+    use_swings = prefs.show_swings if show_swings is None else show_swings
+
     markers: list[dict[str, Any]] = []
-    if show_swings:
+    segments: list[dict[str, Any]] = []
+    bos = prefs.bos
+    swings_v = prefs.swings
+    fvg_v = prefs.fvg
+    levels_v = prefs.levels
+
+    if use_swings:
         for swing in structure.swings[-40:]:
             is_high = swing.kind is SwingKind.HIGH
+            shape_high, shape_low = _swing_shapes(swings_v.icon)
+            text = ""
+            if swings_v.show_labels:
+                text = "SH" if is_high else "SL"
             markers.append(
                 {
                     "time": swing.time_sec,
                     "position": "aboveBar" if is_high else "belowBar",
-                    "color": "#787b86" if is_high else "#b2b5be",
-                    "shape": "circle",
-                    "text": "SH" if is_high else "SL",
-                }
-            )
-    if show_bos:
-        for event in structure.events[-20:]:
-            bullish = event.bias is Bias.BULLISH
-            label = "BOS" if event.kind is StructureEventKind.BOS else "CHoCH"
-            markers.append(
-                {
-                    "time": event.time_sec,
-                    "position": "belowBar" if bullish else "aboveBar",
-                    "color": "#26a69a" if bullish else "#ef5350",
-                    "shape": "arrowUp" if bullish else "arrowDown",
-                    "text": label,
+                    "color": swings_v.color,
+                    "shape": shape_high if is_high else shape_low,
+                    "text": text,
+                    "size": swings_v.size,
                 }
             )
 
+    if use_bos:
+        swing_by_index = {s.index: s for s in structure.swings}
+        for event in structure.events[-20:]:
+            bullish = event.bias is Bias.BULLISH
+            label = "BOS" if event.kind is StructureEventKind.BOS else "CHoCH"
+            color = bos.bull_color if bullish else bos.bear_color
+            broken = swing_by_index.get(event.broken_swing_index)
+            time_from = broken.time_sec if broken is not None else event.time_sec
+            time_to = event.time_sec
+            if time_to <= time_from:
+                time_to = time_from + 1
+            segments.append(
+                {
+                    "timeFrom": time_from,
+                    "timeTo": time_to,
+                    "price": event.price,
+                    "color": color,
+                    "lineWidth": bos.line_width,
+                    "lineStyle": line_style_code(bos.line_style),
+                    "title": label if bos.show_labels else "",
+                }
+            )
+            if bos.show_labels or bos.show_icons:
+                shape = "arrowUp" if bullish else "arrowDown"
+                if not bos.show_icons:
+                    shape = "circle"
+                markers.append(
+                    {
+                        "time": event.time_sec,
+                        "position": "belowBar" if bullish else "aboveBar",
+                        "color": color,
+                        "shape": shape,
+                        "text": label if bos.show_labels else "",
+                        "size": bos.label_size,
+                    }
+                )
+
     zones: list[dict[str, Any]] = []
-    if show_fvg:
+    if use_fvg:
         for gap in structure.fvgs[-10:]:
             if gap.mitigated:
                 continue
@@ -197,18 +243,16 @@ def structure_to_overlays(
                     "timeTo": gap.time_to_sec,
                     "priceTop": gap.top,
                     "priceBottom": gap.bottom,
-                    "color": (
-                        "rgba(38, 166, 154, 0.18)"
-                        if bullish
-                        else "rgba(239, 83, 80, 0.18)"
+                    "color": fvg_v.bull_fill if bullish else fvg_v.bear_fill,
+                    "borderColor": (
+                        fvg_v.bull_border if bullish else fvg_v.bear_border
                     ),
-                    "borderColor": "#26a69a" if bullish else "#ef5350",
-                    "title": "FVG",
+                    "title": "FVG" if fvg_v.show_labels else "",
                 }
             )
 
     levels_payload: list[dict[str, Any]] = []
-    if show_levels:
+    if use_levels:
         chosen = nearest_levels(
             structure.levels,
             ref_price=ref_price,
@@ -218,14 +262,29 @@ def structure_to_overlays(
             levels_payload.append(
                 {
                     "price": level.price,
-                    "color": "#f0b90b",
-                    "lineWidth": 1,
-                    "lineStyle": 2,
-                    "title": "LVL",
+                    "color": levels_v.color,
+                    "lineWidth": levels_v.line_width,
+                    "lineStyle": line_style_code(levels_v.line_style),
+                    "title": "LVL" if levels_v.show_labels else "",
                 }
             )
 
-    return {"markers": markers, "levels": levels_payload, "zones": zones}
+    return {
+        "markers": markers,
+        "levels": levels_payload,
+        "zones": zones,
+        "segments": segments,
+    }
+
+
+def _swing_shapes(icon: str) -> tuple[str, str]:
+    """Return (high_shape, low_shape) for LWC markers."""
+    if icon == "circle":
+        return "circle", "circle"
+    if icon == "square":
+        return "square", "square"
+    # triangle: ▼ above highs, ▲ below lows
+    return "arrowDown", "arrowUp"
 
 
 def nearest_levels(

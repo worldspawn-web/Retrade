@@ -244,12 +244,40 @@
       overlayPriceLines.push(line);
     });
 
+    const fmt = {
+      type: "price",
+      precision: pricePrecision,
+      minMove: Math.pow(10, -pricePrecision),
+    };
+
+    (payload.segments || []).forEach(function (seg) {
+      const style =
+        seg.lineStyle == null
+          ? LightweightCharts.LineStyle.Dashed
+          : seg.lineStyle;
+      const series = chart.addLineSeries({
+        color: seg.color || "#26a69a",
+        lineWidth: seg.lineWidth || 1,
+        lineStyle: style,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+        title: seg.title || "",
+        priceFormat: fmt,
+      });
+      const t1 = seg.timeFrom;
+      let t2 = seg.timeTo;
+      if (t2 <= t1) {
+        t2 = t1 + 1;
+      }
+      series.setData([
+        { time: t1, value: seg.price },
+        { time: t2, value: seg.price },
+      ]);
+      overlayZoneSeries.push(series);
+    });
+
     (payload.zones || []).forEach(function (zone) {
-      const fmt = {
-        type: "price",
-        precision: pricePrecision,
-        minMove: Math.pow(10, -pricePrecision),
-      };
       const top = chart.addLineSeries({
         color: zone.borderColor || "#26a69a",
         lineWidth: 1,

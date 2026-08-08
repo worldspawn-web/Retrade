@@ -49,6 +49,7 @@ from retrade.domain.ui_prefs import UiPrefsStore
 from retrade.infra.binance import BinanceMarketData
 from retrade.infra.symbol_universe import SymbolUniverse
 from retrade.ui.debrief_panel import DebriefPanel
+from retrade.ui.indicator_style_dialog import IndicatorStyleDialog
 from retrade.ui.profile_dialog import ProfileDialog
 
 logger = logging.getLogger(__name__)
@@ -179,6 +180,21 @@ class MainWindow(QMainWindow):
         self._indicators_menu.addAction(self._act_swings)
         self._indicators_btn.setMenu(self._indicators_menu)
 
+        self._indicator_settings_btn = QToolButton()
+        self._indicator_settings_btn.setObjectName("indicatorSettingsButton")
+        self._indicator_settings_btn.setText("⚙")
+        self._indicator_settings_btn.setToolTip("Настройки визуала индикаторов")
+        self._indicator_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._indicator_settings_btn.clicked.connect(self._open_indicator_settings)
+
+        indicators_wrap = QWidget()
+        indicators_wrap.setObjectName("indicatorsWrap")
+        indicators_layout = QHBoxLayout(indicators_wrap)
+        indicators_layout.setContentsMargins(0, 0, 0, 0)
+        indicators_layout.setSpacing(0)
+        indicators_layout.addWidget(self._indicators_btn)
+        indicators_layout.addWidget(self._indicator_settings_btn)
+
         self._btn_long = QPushButton("LONG")
         self._btn_short = QPushButton("SHORT")
         self._btn_skip = QPushButton("Ничего не делать")
@@ -237,7 +253,7 @@ class MainWindow(QMainWindow):
         header.addWidget(self._symbol_label)
         header.addSpacing(16)
         header.addLayout(tf_row)
-        header.addWidget(self._indicators_btn)
+        header.addWidget(indicators_wrap)
         header.addWidget(self._phase_label)
 
         root = QVBoxLayout()
@@ -295,8 +311,27 @@ class MainWindow(QMainWindow):
             QToolButton#indicatorsButton {
                 background-color: #1e222d;
                 border: 1px solid #2a2e39;
-                border-radius: 4px;
+                border-right: none;
+                border-top-left-radius: 4px;
+                border-bottom-left-radius: 4px;
+                border-top-right-radius: 0;
+                border-bottom-right-radius: 0;
                 padding: 6px 10px;
+            }
+            QToolButton#indicatorSettingsButton {
+                background-color: #1e222d;
+                border: 1px solid #2a2e39;
+                border-top-left-radius: 0;
+                border-bottom-left-radius: 0;
+                border-top-right-radius: 4px;
+                border-bottom-right-radius: 4px;
+                padding: 6px 10px;
+                min-width: 28px;
+                color: #b2b5be;
+            }
+            QToolButton#indicatorSettingsButton:hover {
+                color: #f0f3fa;
+                background-color: #2a2e39;
             }
             QPushButton {
                 background-color: #1e222d;
@@ -371,14 +406,13 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self._refresh_profile_header()
 
-    def _indicator_kwargs(self) -> dict[str, bool]:
-        ind = self._ui_prefs.prefs.indicators
-        return {
-            "show_bos": ind.show_bos,
-            "show_fvg": ind.show_fvg,
-            "show_levels": ind.show_levels,
-            "show_swings": ind.show_swings,
-        }
+    def _open_indicator_settings(self) -> None:
+        dialog = IndicatorStyleDialog(self._ui_prefs, self)
+        if dialog.exec():
+            self._apply_indicator_overlays()
+
+    def _indicator_prefs(self):
+        return self._ui_prefs.prefs.indicators
 
     def _on_indicator_toggled(self, key: str, value: bool) -> None:
         self._ui_prefs.set_indicator(key, value)
@@ -414,8 +448,8 @@ class MainWindow(QMainWindow):
         self._chart.set_overlays(
             structure_to_overlays(
                 structure,
+                prefs=self._indicator_prefs(),
                 ref_price=self._ref_price_for_overlays(),
-                **self._indicator_kwargs(),
             )
         )
 
@@ -493,21 +527,21 @@ class MainWindow(QMainWindow):
     def _apply_overlays_for_tf(self, timeframe: str) -> None:
         if self._explanation is None:
             return
-        kwargs = self._indicator_kwargs()
+        prefs = self._indicator_prefs()
         ref = self._ref_price_for_overlays()
         if timeframe == self._settings.execution_timeframe:
             self._chart.set_overlays(
                 structure_to_overlays(
                     self._explanation.execution_map,
+                    prefs=prefs,
                     ref_price=ref,
-                    **kwargs,
                 )
             )
             return
         context = self._explanation.context_map
         if context is not None and context.timeframe == timeframe:
             self._chart.set_overlays(
-                structure_to_overlays(context, ref_price=ref, **kwargs)
+                structure_to_overlays(context, prefs=prefs, ref_price=ref)
             )
             return
         if self._playback is not None:
@@ -519,8 +553,8 @@ class MainWindow(QMainWindow):
         self._chart.set_overlays(
             structure_to_overlays(
                 analyze_series(series, swing_strength=2),
+                prefs=prefs,
                 ref_price=ref,
-                **kwargs,
             )
         )
 
@@ -848,7 +882,7 @@ class MainWindow(QMainWindow):
                 context_series=context,
                 outcome=outcome,
                 plan=plan,
-                **self._indicator_kwargs(),
+                prefs=self._indicator_prefs(),
             )
             self._explanation = explanation
             self._debrief.show_explanation(explanation)
