@@ -34,6 +34,7 @@ from retrade.domain.ui_prefs import (
     SwingsVisual,
     UiPrefsStore,
 )
+from retrade.ui import theme
 
 _LINE_LABELS = {
     "solid": "Solid",
@@ -77,8 +78,8 @@ class _ColorButton(QPushButton):
     def _apply(self) -> None:
         self.setText(self._color)
         self.setStyleSheet(
-            f"background-color: {self._color}; color: #0f1219; "
-            "border: 1px solid #2a2e39; border-radius: 4px; padding: 4px;"
+            f"background-color: {self._color}; color: {theme.BG}; "
+            f"border: 1px solid {theme.BORDER}; border-radius: 8px; padding: 4px;"
         )
 
     def _pick(self) -> None:
@@ -122,6 +123,7 @@ class IndicatorStyleDialog(QDialog):
         self._draft = deepcopy(store.prefs.indicators)
         self.setWindowTitle("Настройки индикаторов")
         self.setMinimumWidth(460)
+        self.setStyleSheet(theme.app_stylesheet())
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_bos_tab(), "BOS / CHoCH")

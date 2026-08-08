@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QDoubleSpinBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -49,11 +50,14 @@ from retrade.domain.trading import (
 from retrade.domain.ui_prefs import UiPrefsStore
 from retrade.infra.binance import BinanceMarketData
 from retrade.infra.symbol_universe import SymbolUniverse
+from retrade.ui import theme
 from retrade.ui.debrief_panel import DebriefPanel
 from retrade.ui.indicator_style_dialog import IndicatorStyleDialog
 from retrade.ui.loading_overlay import LoadingOverlay, apply_content_blur
 from retrade.ui.profile_dialog import ProfileDialog
 from retrade.ui.scenario_load_worker import ScenarioLoadWorker
+from retrade.ui.sounds import SoundPlayer
+from retrade.ui.toast import ToastHost, ToastKind
 
 logger = logging.getLogger(__name__)
 
@@ -133,27 +137,37 @@ class MainWindow(QMainWindow):
         self._name_btn.setObjectName("profileNameButton")
         self._name_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._name_btn.clicked.connect(self._open_profile)
-        self._refresh_profile_header()
 
         self._symbol_label = QLabel(settings.symbol)
-        self._symbol_label.setObjectName("symbolLabel")
+        self._symbol_label.setObjectName("symbolBadge")
 
         self._phase_label = QLabel("Loading…")
-        self._phase_label.setObjectName("phaseLabel")
+        self._phase_label.setObjectName("phaseBadge")
+
+        self._stats_badge = QLabel("—")
+        self._stats_badge.setObjectName("statsBadge")
+        self._stats_badge.setToolTip("Σ R · winrate · сделок")
+        self._refresh_profile_header()
 
         self._tf_group = QButtonGroup(self)
-        self._tf_buttons: dict[str, QPushButton] = {}
-        tf_row = QHBoxLayout()
+        self._tf_group.setExclusive(True)
+        self._tf_buttons: dict[str, QToolButton] = {}
+        tf_wrap = QFrame()
+        tf_wrap.setObjectName("tfSegment")
+        tf_row = QHBoxLayout(tf_wrap)
+        tf_row.setContentsMargins(0, 0, 0, 0)
+        tf_row.setSpacing(0)
         for tf in (settings.execution_timeframe, *settings.context_timeframes):
-            btn = QPushButton(tf.upper())
+            btn = QToolButton()
+            btn.setText(tf.upper())
             btn.setCheckable(True)
             btn.setObjectName("tfButton")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _=False, t=tf: self._on_tf_clicked(t))
             self._tf_group.addButton(btn)
             self._tf_buttons[tf] = btn
             tf_row.addWidget(btn)
         self._tf_buttons[settings.execution_timeframe].setChecked(True)
-        tf_row.addStretch(1)
 
         self._indicators_btn = QToolButton()
         self._indicators_btn.setText("Indicators ▾")
@@ -239,13 +253,21 @@ class MainWindow(QMainWindow):
         self._tp_spin.setPrefix("TP ")
         self._sl_spin.setPrefix("SL ")
 
+        order_group = QFrame()
+        order_group.setObjectName("orderGroup")
+        order_layout = QHBoxLayout(order_group)
+        order_layout.setContentsMargins(8, 4, 8, 4)
+        order_layout.setSpacing(8)
+        order_layout.addWidget(self._sl_spin)
+        order_layout.addWidget(self._tp_spin)
+
         action_row = QHBoxLayout()
+        action_row.setSpacing(8)
         action_row.addWidget(self._btn_long)
         action_row.addWidget(self._btn_short)
         action_row.addWidget(self._btn_skip)
-        action_row.addSpacing(12)
-        action_row.addWidget(self._sl_spin)
-        action_row.addWidget(self._tp_spin)
+        action_row.addSpacing(8)
+        action_row.addWidget(order_group)
         action_row.addWidget(self._btn_confirm)
         action_row.addWidget(self._btn_exit)
         action_row.addWidget(self._btn_keep)
@@ -254,18 +276,21 @@ class MainWindow(QMainWindow):
         action_row.addStretch(1)
 
         header = QHBoxLayout()
+        header.setSpacing(10)
         header.addWidget(self._avatar_btn)
         header.addWidget(self._name_btn)
-        header.addSpacing(16)
+        header.addSpacing(8)
         header.addWidget(self._symbol_label)
-        header.addSpacing(16)
-        header.addLayout(tf_row)
+        header.addSpacing(8)
+        header.addWidget(tf_wrap)
         header.addWidget(indicators_wrap)
+        header.addStretch(1)
         header.addWidget(self._phase_label)
+        header.addWidget(self._stats_badge)
 
         root = QVBoxLayout()
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(10)
         root.addLayout(header)
         root.addWidget(self._chart, stretch=1)
         root.addWidget(self._debrief)
@@ -283,6 +308,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self._loading_overlay = LoadingOverlay(central)
+        self._toast = ToastHost(central)
+        self._sounds = SoundPlayer()
+        self._sounds.set_enabled(self._ui_prefs.prefs.sounds_enabled)
         central.installEventFilter(self)
         self.setStatusBar(QStatusBar(self))
         self.statusBar().showMessage("Initializing…")
@@ -292,117 +320,36 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self._on_playback_tick)
 
         self._apply_style()
+        self._refresh_stats_badge()
         self._set_phase(UiPhase.LOADING)
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow, QWidget {
-                background-color: #0f1219;
-                color: #d1d4dc;
-            }
-            QLabel#symbolLabel {
-                font-size: 18px;
-                font-weight: 700;
-                color: #f0f3fa;
-            }
-            QLabel#phaseLabel {
-                color: #787b86;
-            }
-            QPushButton#profileNameButton {
-                background: transparent;
-                border: none;
-                color: #f0f3fa;
-                font-weight: 600;
-                padding: 4px 8px;
-            }
-            QPushButton#profileNameButton:hover {
-                color: #2962ff;
-            }
-            QToolButton#avatarButton {
-                border: 1px solid #2a2e39;
-                border-radius: 18px;
-                background: #1e222d;
-                padding: 0;
-            }
-            QToolButton#indicatorsButton {
-                background-color: #1e222d;
-                border: 1px solid #2a2e39;
-                border-right: none;
-                border-top-left-radius: 4px;
-                border-bottom-left-radius: 4px;
-                border-top-right-radius: 0;
-                border-bottom-right-radius: 0;
-                padding: 6px 10px;
-            }
-            QToolButton#indicatorSettingsButton {
-                background-color: #1e222d;
-                border: 1px solid #2a2e39;
-                border-top-left-radius: 0;
-                border-bottom-left-radius: 0;
-                border-top-right-radius: 4px;
-                border-bottom-right-radius: 4px;
-                padding: 6px 10px;
-                min-width: 28px;
-                color: #b2b5be;
-            }
-            QToolButton#indicatorSettingsButton:hover {
-                color: #f0f3fa;
-                background-color: #2a2e39;
-            }
-            QPushButton {
-                background-color: #1e222d;
-                border: 1px solid #2a2e39;
-                border-radius: 4px;
-                padding: 8px 14px;
-                min-height: 28px;
-            }
-            QPushButton:hover { background-color: #2a2e39; }
-            QPushButton:checked {
-                background-color: #2962ff;
-                border-color: #2962ff;
-                color: #ffffff;
-            }
-            QPushButton:disabled { color: #5d606b; }
-            QPushButton#longButton { color: #26a69a; font-weight: 700; }
-            QPushButton#shortButton { color: #ef5350; font-weight: 700; }
-            QPushButton#confirmButton {
-                background-color: #2962ff;
-                border-color: #2962ff;
-                color: #ffffff;
-                font-weight: 700;
-            }
-            QPushButton#exitButton {
-                background-color: #ef5350;
-                border-color: #ef5350;
-                color: #ffffff;
-                font-weight: 700;
-            }
-            QPushButton#keepButton {
-                background-color: #26a69a;
-                border-color: #26a69a;
-                color: #ffffff;
-                font-weight: 700;
-            }
-            QPushButton#nextButton {
-                background-color: #363a45;
-                font-weight: 700;
-            }
-            QDoubleSpinBox {
-                background-color: #1e222d;
-                border: 1px solid #2a2e39;
-                border-radius: 4px;
-                padding: 6px;
-                min-width: 140px;
-            }
-            QStatusBar {
-                background-color: #0f1219;
-                color: #787b86;
-            }
-            """
-        )
+        self.setStyleSheet(theme.app_stylesheet())
         font = QFont("Segoe UI", 10)
         self.setFont(font)
+
+    def _notify(
+        self,
+        title: str,
+        body: str = "",
+        *,
+        kind: ToastKind = ToastKind.INFO,
+        sound: str | None = None,
+        msec: int = 3200,
+    ) -> None:
+        self._toast.show_toast(title, body, kind=kind, msec=msec)
+        if sound:
+            self._sounds.play(sound)
+
+    def _refresh_stats_badge(self) -> None:
+        if not hasattr(self, "_stats_badge"):
+            return
+        stats = self._profile.profile.stats
+        wr = stats.winrate
+        wr_text = f"{wr * 100:.0f}%" if wr is not None else "—"
+        self._stats_badge.setText(
+            f"ΣR {stats.sum_r:+.1f} · {wr_text} · {stats.trades}"
+        )
 
     def _refresh_profile_header(self) -> None:
         profile = self._profile.profile
@@ -417,10 +364,17 @@ class MainWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
             self._avatar_btn.setIcon(QIcon(scaled))
+        self._refresh_stats_badge()
 
     def _open_profile(self) -> None:
-        dialog = ProfileDialog(self._profile, _DEFAULT_AVATAR, self)
+        dialog = ProfileDialog(
+            self._profile,
+            _DEFAULT_AVATAR,
+            self,
+            ui_prefs=self._ui_prefs,
+        )
         if dialog.exec():
+            self._sounds.set_enabled(self._ui_prefs.prefs.sounds_enabled)
             self._refresh_profile_header()
 
     def _open_indicator_settings(self) -> None:
@@ -488,11 +442,12 @@ class MainWindow(QMainWindow):
         if (
             watched is self.centralWidget()
             and event.type() is QEvent.Type.Resize
-            and self._loading_overlay is not None
         ):
             central = self.centralWidget()
             if central is not None:
-                self._loading_overlay.setGeometry(central.rect())
+                if self._loading_overlay is not None:
+                    self._loading_overlay.setGeometry(central.rect())
+                self._toast.resize_to_parent()
         return super().eventFilter(watched, event)
 
     def _set_loading(self, enabled: bool, message: str = "Загрузка…") -> None:
@@ -587,20 +542,26 @@ class MainWindow(QMainWindow):
             )
         self._set_loading(False)
         exhausted = "Нет доступных монет" in error
-        QMessageBox.critical(
-            self,
-            "Retrade",
+        detail = (
             f"Не удалось загрузить данные"
-            f"{f' для {symbol}' if symbol else ''}:\n{error}"
-            + (
-                "\n\nБольше нет монет для попытки в этой сессии."
-                if exhausted
-                else "\n\nПопробуем другую монету."
-            ),
+            f"{f' для {symbol}' if symbol else ''}: {error}"
         )
         if exhausted:
+            QMessageBox.critical(
+                self,
+                "Retrade",
+                f"{detail}\n\nБольше нет монет для попытки в этой сессии.",
+            )
             self._set_phase(UiPhase.RESULT)
             return
+
+        self._notify(
+            "Повтор загрузки",
+            "Попробуем другую монету.",
+            kind=ToastKind.WARN,
+            sound="error",
+            msec=2800,
+        )
         try:
             pick_symbol(
                 self._universe,
@@ -766,7 +727,7 @@ class MainWindow(QMainWindow):
         try:
             plan.validate()
         except ValueError as exc:
-            QMessageBox.warning(self, "Retrade", str(exc))
+            self._notify(str(exc), kind=ToastKind.WARN, sound="error", msec=2500)
             return
 
         self._playback = self._session.start_trade(plan)
@@ -831,6 +792,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Пауза после {progress} свечей сделки "
                 f"(каждые {n}) — EXIT или KEEP"
+            )
+            self._notify(
+                "HOLD",
+                f"После {progress} свечей — EXIT или KEEP",
+                kind=ToastKind.INFO,
+                sound="hold",
             )
             return
 
@@ -1005,6 +972,7 @@ class MainWindow(QMainWindow):
 
         r_note = f" · R {realized_r:+.2f}" if realized_r is not None else ""
         self.statusBar().showMessage(f"Результат: {text}{r_note}")
+        self._emit_outcome_feedback(outcome, text, realized_r)
 
         can_step = (
             self._playback is not None
@@ -1013,13 +981,33 @@ class MainWindow(QMainWindow):
         )
         self._btn_step.setEnabled(bool(can_step))
 
-        if outcome is TradeOutcome.AMBIGUOUS:
-            QMessageBox.information(
-                self,
+    def _emit_outcome_feedback(
+        self,
+        outcome: TradeOutcome,
+        text: str,
+        realized_r: float | None,
+    ) -> None:
+        body = text if realized_r is None else f"{text} · R {realized_r:+.2f}"
+        if outcome is TradeOutcome.TAKE_PROFIT:
+            self._notify("Take Profit", body, kind=ToastKind.SUCCESS, sound="tp")
+        elif outcome is TradeOutcome.STOP_LOSS:
+            self._notify("Stop Loss", body, kind=ToastKind.ERROR, sound="sl")
+        elif outcome is TradeOutcome.AMBIGUOUS:
+            self._notify(
                 "Ничья",
-                "На одной 15M-свече задеты и TP, и SL.\n"
-                "По OHLC порядок касания неизвестен — засчитываем ничью.",
+                "TP и SL на одной свече — порядок касания неизвестен.",
+                kind=ToastKind.WARN,
+                sound="exit",
+                msec=4000,
             )
+        elif outcome is TradeOutcome.SKIP:
+            self._notify("Skip", "Сделка пропущена", kind=ToastKind.INFO, msec=2200)
+        elif outcome is TradeOutcome.EXIT:
+            self._notify("EXIT", body, kind=ToastKind.INFO, sound="exit")
+        elif outcome is TradeOutcome.OPEN:
+            self._notify("No hit", body, kind=ToastKind.WARN, sound="exit")
+        else:
+            self._notify(text, body, kind=ToastKind.INFO, sound="exit")
 
     def _set_phase(self, phase: UiPhase) -> None:
         self._phase = phase

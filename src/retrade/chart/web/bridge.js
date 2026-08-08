@@ -8,27 +8,27 @@
 
   const chart = LightweightCharts.createChart(container, {
     layout: {
-      background: { type: "solid", color: "#131722" },
-      textColor: "#d1d4dc",
+      background: { type: "solid", color: "#0B0D12" },
+      textColor: "#8B93A7",
       fontSize: 12,
     },
     grid: {
-      vertLines: { color: "#1f2330" },
-      horzLines: { color: "#1f2330" },
+      vertLines: { color: "#1A1F2B" },
+      horzLines: { color: "#1A1F2B" },
     },
     crosshair: {
       mode: LightweightCharts.CrosshairMode.Normal,
-      vertLine: { color: "#758696", labelBackgroundColor: "#2a2e39" },
-      horzLine: { color: "#758696", labelBackgroundColor: "#2a2e39" },
+      vertLine: { color: "#5C6578", labelBackgroundColor: "#181C26" },
+      horzLine: { color: "#5C6578", labelBackgroundColor: "#181C26" },
     },
     rightPriceScale: {
-      borderColor: "#2a2e39",
+      borderColor: "#2A3040",
       scaleMargins: { top: 0.08, bottom: 0.12 },
       autoScale: true,
       mode: 0,
     },
     timeScale: {
-      borderColor: "#2a2e39",
+      borderColor: "#2A3040",
       timeVisible: true,
       secondsVisible: false,
     },
@@ -107,11 +107,11 @@
 
   function candleSeriesOptions() {
     return {
-      upColor: "#26a69a",
-      downColor: "#ef5350",
+      upColor: "#2DD4BF",
+      downColor: "#F87171",
       borderVisible: false,
-      wickUpColor: "#26a69a",
-      wickDownColor: "#ef5350",
+      wickUpColor: "#2DD4BF",
+      wickDownColor: "#F87171",
       priceFormat: {
         type: "price",
         precision: pricePrecision,
@@ -388,7 +388,7 @@
           ? LightweightCharts.LineStyle.Dashed
           : seg.lineStyle;
       const series = chart.addLineSeries({
-        color: seg.color || "#26a69a",
+        color: seg.color || "#2DD4BF",
         lineWidth: seg.lineWidth || 1,
         lineStyle: style,
         lastValueVisible: false,
@@ -411,7 +411,7 @@
 
     (payload.zones || []).forEach(function (zone) {
       const top = chart.addLineSeries({
-        color: zone.borderColor || "#26a69a",
+        color: zone.borderColor || "#2DD4BF",
         lineWidth: 1,
         lineStyle: LightweightCharts.LineStyle.SparseDotted,
         lastValueVisible: false,
@@ -420,7 +420,7 @@
         priceFormat: fmt,
       });
       const bottom = chart.addLineSeries({
-        color: zone.borderColor || "#26a69a",
+        color: zone.borderColor || "#2DD4BF",
         lineWidth: 1,
         lineStyle: LightweightCharts.LineStyle.SparseDotted,
         lastValueVisible: false,
@@ -469,13 +469,13 @@
       sl: levels.sl,
     };
     if (levels.entry != null) {
-      entryLine = makeLine(levels.entry, "#2962ff", "Entry");
+      entryLine = makeLine(levels.entry, "#38BDF8", "Entry");
     }
     if (levels.tp != null) {
-      tpLine = makeLine(levels.tp, "#26a69a", "TP");
+      tpLine = makeLine(levels.tp, "#2DD4BF", "TP");
     }
     if (levels.sl != null) {
-      slLine = makeLine(levels.sl, "#ef5350", "SL");
+      slLine = makeLine(levels.sl, "#F87171", "SL");
     }
   }
 
@@ -552,13 +552,13 @@
         if (tpLine) {
           candleSeries.removePriceLine(tpLine);
         }
-        tpLine = makeLine(price, "#26a69a", "TP");
+        tpLine = makeLine(price, "#2DD4BF", "TP");
       } else if (dragTarget === "sl") {
         currentLevels.sl = price;
         if (slLine) {
           candleSeries.removePriceLine(slLine);
         }
-        slLine = makeLine(price, "#ef5350", "SL");
+        slLine = makeLine(price, "#F87171", "SL");
       }
     },
     true

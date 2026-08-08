@@ -72,10 +72,11 @@ class IndicatorPrefs:
 @dataclass
 class UiPrefs:
     indicators: IndicatorPrefs
+    sounds_enabled: bool = True
 
     @classmethod
     def defaults(cls) -> UiPrefs:
-        return cls(indicators=IndicatorPrefs())
+        return cls(indicators=IndicatorPrefs(), sounds_enabled=True)
 
 
 def _migrate_size(value: float, *, default: float) -> float:
@@ -244,7 +245,11 @@ class UiPrefsStore:
             return prefs
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-            return UiPrefs(indicators=load_indicator_prefs(raw.get("indicators")))
+            sounds = raw.get("sounds_enabled", True)
+            return UiPrefs(
+                indicators=load_indicator_prefs(raw.get("indicators")),
+                sounds_enabled=bool(sounds),
+            )
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return UiPrefs.defaults()
 
@@ -255,11 +260,18 @@ class UiPrefsStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         indicators = asdict(prefs.indicators)
         indicators["visual_scale"] = 2
-        payload = {"indicators": indicators}
+        payload = {
+            "indicators": indicators,
+            "sounds_enabled": prefs.sounds_enabled,
+        }
         self._path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def set_sounds_enabled(self, enabled: bool) -> None:
+        self.prefs.sounds_enabled = enabled
+        self.save()
 
     def set_indicator(self, key: str, value: bool) -> None:
         if key == "bos":

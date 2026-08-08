@@ -1,4 +1,4 @@
-"""Profile dialog: display name, avatar, statistics, reset."""
+"""Profile dialog: display name, avatar, statistics, sound toggle, reset."""
 
 from __future__ import annotations
 
@@ -7,10 +7,13 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -21,6 +24,8 @@ from PySide6.QtWidgets import (
 )
 
 from retrade.domain.profile import ProfileStore
+from retrade.domain.ui_prefs import UiPrefsStore
+from retrade.ui import theme
 
 
 class ProfileDialog(QDialog):
@@ -31,18 +36,23 @@ class ProfileDialog(QDialog):
         store: ProfileStore,
         default_avatar: Path,
         parent: QWidget | None = None,
+        *,
+        ui_prefs: UiPrefsStore | None = None,
     ) -> None:
         super().__init__(parent)
         self._store = store
         self._default_avatar = default_avatar
+        self._ui_prefs = ui_prefs
         self.setWindowTitle("Профиль")
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(400)
+        self.setStyleSheet(theme.app_stylesheet())
 
         self._avatar_label = QLabel()
         self._avatar_label.setFixedSize(72, 72)
         self._avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._avatar_label.setStyleSheet(
-            "border-radius: 36px; background: #1e222d; border: 1px solid #2a2e39;"
+            f"border-radius: 36px; background: {theme.ELEVATED}; "
+            f"border: 1px solid {theme.BORDER};"
         )
 
         self._name_edit = QLineEdit(store.profile.display_name)
@@ -61,22 +71,31 @@ class ProfileDialog(QDialog):
         avatar_col.addStretch(1)
         avatar_row.addLayout(avatar_col)
 
+        self._sounds_check = QCheckBox("Звуки уведомлений")
+        if ui_prefs is not None:
+            self._sounds_check.setChecked(ui_prefs.prefs.sounds_enabled)
+        else:
+            self._sounds_check.setChecked(True)
+            self._sounds_check.setEnabled(False)
+
         self._stats_labels: dict[str, QLabel] = {}
-        stats_form = QFormLayout()
-        for key, title in (
+        stats_grid = QGridLayout()
+        stats_grid.setHorizontalSpacing(8)
+        stats_grid.setVerticalSpacing(8)
+        items = (
             ("trades", "Сделок"),
-            ("wins", "TP (wins)"),
-            ("losses", "SL (losses)"),
+            ("wins", "TP"),
+            ("losses", "SL"),
             ("draws", "Ничьи"),
             ("exits", "EXIT"),
             ("skips", "Skip"),
             ("open_tails", "No hit"),
             ("sum_r", "Σ R"),
             ("winrate", "Winrate"),
-        ):
-            label = QLabel("—")
-            self._stats_labels[key] = label
-            stats_form.addRow(title, label)
+        )
+        for i, (key, title) in enumerate(items):
+            card = self._make_stat_card(title, key)
+            stats_grid.addWidget(card, i // 3, i % 3)
 
         reset_btn = QPushButton("Сбросить статистику")
         reset_btn.clicked.connect(self._reset_stats)
@@ -88,18 +107,52 @@ class ProfileDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         root = QVBoxLayout(self)
+        root.setSpacing(12)
         root.addLayout(avatar_row)
         form = QFormLayout()
         form.addRow("Имя", self._name_edit)
         root.addLayout(form)
-        root.addSpacing(8)
+        root.addWidget(self._sounds_check)
         root.addWidget(QLabel("Статистика"))
-        root.addLayout(stats_form)
+        root.addLayout(stats_grid)
         root.addWidget(reset_btn)
         root.addWidget(buttons)
 
         self._refresh_avatar()
         self._refresh_stats()
+
+    def _make_stat_card(self, title: str, key: str) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("statCard")
+        frame.setStyleSheet(
+            f"""
+            QFrame#statCard {{
+                background-color: {theme.ELEVATED};
+                border: 1px solid {theme.BORDER};
+                border-radius: 8px;
+            }}
+            QLabel#statTitle {{
+                color: {theme.TEXT_MUTED};
+                font-size: 11px;
+            }}
+            QLabel#statValue {{
+                color: {theme.TEXT};
+                font-size: 15px;
+                font-weight: 700;
+            }}
+            """
+        )
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(2)
+        title_l = QLabel(title)
+        title_l.setObjectName("statTitle")
+        value_l = QLabel("—")
+        value_l.setObjectName("statValue")
+        self._stats_labels[key] = value_l
+        layout.addWidget(title_l)
+        layout.addWidget(value_l)
+        return frame
 
     def _refresh_avatar(self) -> None:
         path = self._store.profile.resolved_avatar(self._default_avatar)
@@ -164,4 +217,6 @@ class ProfileDialog(QDialog):
 
     def _accept(self) -> None:
         self._store.set_display_name(self._name_edit.text())
+        if self._ui_prefs is not None:
+            self._ui_prefs.set_sounds_enabled(self._sounds_check.isChecked())
         self.accept()

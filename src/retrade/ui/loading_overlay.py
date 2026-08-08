@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from retrade.ui import theme
+
 
 class _Spinner(QWidget):
     """Simple arc spinner."""
@@ -38,11 +40,17 @@ class _Spinner(QWidget):
     def paintEvent(self, _event: object) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#2962ff"))
+        track = QPen(QColor(theme.BORDER))
+        track.setWidth(4)
+        track.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(track)
+        rect = QRectF(6, 6, self.width() - 12, self.height() - 12)
+        painter.drawArc(rect, 0, 360 * 16)
+
+        pen = QPen(QColor(theme.MINT))
         pen.setWidth(4)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
-        rect = QRectF(6, 6, self.width() - 12, self.height() - 12)
         painter.drawArc(rect, -self._angle * 16, 270 * 16)
 
 
@@ -54,15 +62,15 @@ class LoadingOverlay(QWidget):
         self.setObjectName("loadingOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(
-            """
-            QWidget#loadingOverlay {
-                background-color: rgba(15, 18, 25, 140);
-            }
-            QLabel#loadingText {
-                color: #f0f3fa;
+            f"""
+            QWidget#loadingOverlay {{
+                background-color: rgba(11, 13, 18, 160);
+            }}
+            QLabel#loadingText {{
+                color: {theme.TEXT};
                 font-size: 14px;
                 font-weight: 600;
-            }
+            }}
             """
         )
         self._spinner = _Spinner(self)

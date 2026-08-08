@@ -13,13 +13,14 @@ from PySide6.QtWidgets import (
 )
 
 from retrade.domain.explanation import DebriefChip, Explanation
+from retrade.ui import theme
 
 _TONE_COLORS = {
-    "neutral": ("#2a2e39", "#d1d4dc"),
-    "good": ("#12352f", "#26a69a"),
-    "bad": ("#3a1f22", "#ef5350"),
-    "warn": ("#3a2f14", "#f0b90b"),
-    "accent": ("#1a2744", "#5b8def"),
+    "neutral": (theme.ELEVATED, theme.TEXT_MUTED),
+    "good": (theme.MINT_DIM, theme.MINT),
+    "bad": (theme.CORAL_DIM, theme.CORAL),
+    "warn": (theme.AMBER_DIM, theme.AMBER),
+    "accent": (theme.SKY_DIM, theme.SKY),
 }
 
 
@@ -53,28 +54,27 @@ class DebriefPanel(QFrame):
         top.addWidget(self._note)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 10)
+        root.setContentsMargins(4, 6, 4, 6)
         root.setSpacing(8)
         root.addLayout(top)
         root.addLayout(self._chips_row)
 
         self.setStyleSheet(
-            """
-            QFrame#debriefPanel {
-                background-color: #131722;
-                border: 1px solid #2a2e39;
-                border-radius: 6px;
-            }
-            QLabel#debriefHeadline {
-                color: #f0f3fa;
-                font-size: 16px;
+            f"""
+            QFrame#debriefPanel {{
+                background-color: transparent;
+                border: none;
+            }}
+            QLabel#debriefHeadline {{
+                color: {theme.TEXT};
+                font-size: 15px;
                 font-weight: 700;
-                letter-spacing: 0.5px;
-            }
-            QLabel#debriefNote {
-                color: #787b86;
-                font-size: 12px;
-            }
+                letter-spacing: 0.3px;
+            }}
+            QLabel#debriefNote {{
+                color: {theme.TEXT_MUTED};
+                font-size: 11px;
+            }}
             """
         )
         self.clear()
@@ -110,7 +110,9 @@ class DebriefPanel(QFrame):
         layout.setSpacing(6)
 
         label = QLabel(chip.label)
-        label.setStyleSheet("color: #787b86; font-size: 10px; font-weight: 600;")
+        label.setStyleSheet(
+            f"color: {theme.TEXT_MUTED}; font-size: 10px; font-weight: 600;"
+        )
         value = QLabel(chip.value)
         value.setStyleSheet(f"color: {fg}; font-size: 12px; font-weight: 700;")
         layout.addWidget(label)
@@ -120,8 +122,8 @@ class DebriefPanel(QFrame):
             f"""
             QFrame#debriefChip {{
                 background-color: {bg};
-                border: 1px solid #2a2e39;
-                border-radius: 4px;
+                border: 1px solid {fg};
+                border-radius: 999px;
             }}
             """
         )
