@@ -18,6 +18,7 @@ from retrade.domain.smc import (
 from retrade.domain.trading import Side, TradeOutcome, TradePlan
 from retrade.domain.ui_prefs import (
     IndicatorPrefs,
+    hex_to_rgba,
     line_style_code,
 )
 
@@ -171,6 +172,7 @@ def structure_to_overlays(
 
     markers: list[dict[str, Any]] = []
     segments: list[dict[str, Any]] = []
+    labels: list[dict[str, Any]] = []
     bos = prefs.bos
     swings_v = prefs.swings
     fvg_v = prefs.fvg
@@ -179,18 +181,21 @@ def structure_to_overlays(
     if use_swings:
         for swing in structure.swings[-40:]:
             is_high = swing.kind is SwingKind.HIGH
-            shape_high, shape_low = _swing_shapes(swings_v.icon)
+            icon = _swing_icon(swings_v.icon, is_high=is_high)
             text = ""
             if swings_v.show_labels:
                 text = "SH" if is_high else "SL"
-            markers.append(
+            # HTML overlays — real triangles (LWC only has arrow shapes).
+            labels.append(
                 {
                     "time": swing.time_sec,
-                    "position": "aboveBar" if is_high else "belowBar",
-                    "color": swings_v.color,
-                    "shape": shape_high if is_high else shape_low,
+                    "price": swing.price,
                     "text": text,
-                    "size": swings_v.size,
+                    "color": swings_v.color,
+                    "fontSize": max(6, round(9 * swings_v.size)),
+                    "align": "above" if is_high else "below",
+                    "icon": icon,
+                    "iconSize": max(4, round(7 * swings_v.size)),
                 }
             )
 
@@ -205,6 +210,7 @@ def structure_to_overlays(
             time_to = event.time_sec
             if time_to <= time_from:
                 time_to = time_from + 1
+            # No title — avoids duplicate label on the right price scale.
             segments.append(
                 {
                     "timeFrom": time_from,
@@ -213,21 +219,20 @@ def structure_to_overlays(
                     "color": color,
                     "lineWidth": bos.line_width,
                     "lineStyle": line_style_code(bos.line_style),
-                    "title": label if bos.show_labels else "",
+                    "title": "",
                 }
             )
-            if bos.show_labels or bos.show_icons:
-                shape = "arrowUp" if bullish else "arrowDown"
-                if not bos.show_icons:
-                    shape = "circle"
-                markers.append(
+            if bos.show_labels or bos.icon != "none":
+                labels.append(
                     {
-                        "time": event.time_sec,
-                        "position": "belowBar" if bullish else "aboveBar",
-                        "color": color,
-                        "shape": shape,
+                        "time": time_to,
+                        "price": event.price,
                         "text": label if bos.show_labels else "",
-                        "size": bos.label_size,
+                        "color": color,
+                        "fontSize": max(6, round(10 * bos.label_size)),
+                        "align": "center",
+                        "icon": bos.icon if bos.icon != "none" else "",
+                        "iconSize": max(4, round(6 * bos.label_size)),
                     }
                 )
 
@@ -237,17 +242,21 @@ def structure_to_overlays(
             if gap.mitigated:
                 continue
             bullish = gap.bias is Bias.BULLISH
+            fill = hex_to_rgba(
+                fvg_v.bull_color if bullish else fvg_v.bear_color,
+                fvg_v.fill_opacity,
+            )
             zones.append(
                 {
                     "timeFrom": gap.time_from_sec,
                     "timeTo": gap.time_to_sec,
                     "priceTop": gap.top,
                     "priceBottom": gap.bottom,
-                    "color": fvg_v.bull_fill if bullish else fvg_v.bear_fill,
+                    "color": fill,
                     "borderColor": (
                         fvg_v.bull_border if bullish else fvg_v.bear_border
                     ),
-                    "title": "FVG" if fvg_v.show_labels else "",
+                    "title": "",
                 }
             )
 
@@ -265,26 +274,45 @@ def structure_to_overlays(
                     "color": levels_v.color,
                     "lineWidth": levels_v.line_width,
                     "lineStyle": line_style_code(levels_v.line_style),
-                    "title": "LVL" if levels_v.show_labels else "",
+                    # Empty title — price tick stays; text only via chart labels.
+                    "title": "",
+                    "axisLabelVisible": True,
                 }
             )
+            if levels_v.show_labels and levels_v.label_text:
+                # Anchor near the right edge using last visible bar time if needed;
+                # bridge places at chart right for price-only labels when time=null.
+                labels.append(
+                    {
+                        "time": None,
+                        "price": level.price,
+                        "text": levels_v.label_text,
+                        "color": levels_v.color,
+                        "fontSize": max(6, round(10 * 1.0)),
+                        "align": "above",
+                        "icon": "",
+                        "iconSize": 0,
+                        "anchor": "right",
+                    }
+                )
 
     return {
         "markers": markers,
         "levels": levels_payload,
         "zones": zones,
         "segments": segments,
+        "labels": labels,
     }
 
 
-def _swing_shapes(icon: str) -> tuple[str, str]:
-    """Return (high_shape, low_shape) for LWC markers."""
+def _swing_icon(icon: str, *, is_high: bool) -> str:
+    """HTML overlay icon name for a swing high/low."""
     if icon == "circle":
-        return "circle", "circle"
+        return "circle"
     if icon == "square":
-        return "square", "square"
-    # triangle: ▼ above highs, ▲ below lows
-    return "arrowDown", "arrowUp"
+        return "square"
+    # Equilateral CSS triangles (not LWC arrows).
+    return "triangleDown" if is_high else "triangleUp"
 
 
 def nearest_levels(

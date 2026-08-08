@@ -54,6 +54,8 @@
   let currentLevels = { entry: null, tp: null, sl: null };
   let overlayPriceLines = [];
   let overlayZoneSeries = [];
+  let overlayLabelData = [];
+  let overlayLabelEls = [];
   let lastCandles = [];
   let pricePrecision = 2;
 
@@ -160,6 +162,15 @@
     currentLevels = { entry: null, tp: null, sl: null };
   }
 
+  function clearLabelOverlays() {
+    overlayLabelEls.forEach(function (el) {
+      if (el.parentNode) {
+        el.parentNode.removeChild(el);
+      }
+    });
+    overlayLabelEls = [];
+  }
+
   function clearOverlays() {
     if (candleSeries) {
       overlayPriceLines.forEach(function (line) {
@@ -184,6 +195,127 @@
       }
     });
     overlayZoneSeries = [];
+    clearLabelOverlays();
+    overlayLabelData = [];
+  }
+
+  function iconHtml(kind, sizePx, color) {
+    if (!kind) {
+      return "";
+    }
+    if (kind === "circle") {
+      return (
+        '<span class="ico ico-circle" style="width:' +
+        sizePx +
+        "px;height:" +
+        sizePx +
+        "px;background:" +
+        color +
+        ';"></span>'
+      );
+    }
+    if (kind === "square") {
+      return (
+        '<span class="ico ico-square" style="width:' +
+        sizePx +
+        "px;height:" +
+        sizePx +
+        "px;background:" +
+        color +
+        ';"></span>'
+      );
+    }
+    const half = Math.max(2, Math.round(sizePx / 2));
+    if (kind === "triangle" || kind === "triangleUp") {
+      return (
+        '<span class="ico ico-triangle-up" style="border-left-width:' +
+        half +
+        "px;border-right-width:" +
+        half +
+        "px;border-bottom-width:" +
+        sizePx +
+        "px;border-bottom-color:" +
+        color +
+        ';"></span>'
+      );
+    }
+    if (kind === "triangleDown") {
+      return (
+        '<span class="ico ico-triangle-down" style="border-left-width:' +
+        half +
+        "px;border-right-width:" +
+        half +
+        "px;border-top-width:" +
+        sizePx +
+        "px;border-top-color:" +
+        color +
+        ';"></span>'
+      );
+    }
+    return "";
+  }
+
+  function renderLabelOverlays() {
+    clearLabelOverlays();
+    if (!candleSeries || !overlayLabelData.length) {
+      return;
+    }
+    const chartWidth = container.clientWidth || 0;
+    overlayLabelData.forEach(function (lb) {
+      const y = candleSeries.priceToCoordinate(lb.price);
+      if (y == null) {
+        return;
+      }
+      let x;
+      if (lb.anchor === "right" || lb.time == null) {
+        x = Math.max(40, chartWidth - 56);
+      } else {
+        x = chart.timeScale().timeToCoordinate(lb.time);
+      }
+      if (x == null) {
+        return;
+      }
+      const el = document.createElement("div");
+      el.className = "overlay-label";
+      const fontSize = lb.fontSize || 10;
+      const iconSize = lb.iconSize || Math.max(4, Math.round(fontSize * 0.6));
+      const color = lb.color || "#d1d4dc";
+      el.style.color = color;
+      el.style.fontSize = fontSize + "px";
+      const align = lb.align || "center";
+      const gap = Math.max(2, Math.round(fontSize * 0.35));
+      let top = y;
+      let transform = "translate(-50%, -50%)";
+      if (align === "above") {
+        top = y - gap;
+        transform = "translate(-50%, -100%)";
+      } else if (align === "below") {
+        top = y + gap;
+        transform = "translate(-50%, 0)";
+      }
+      if (lb.anchor === "right") {
+        if (align === "above") {
+          transform = "translate(-100%, -100%)";
+        } else if (align === "below") {
+          transform = "translate(-100%, 0)";
+        } else {
+          transform = "translate(-100%, -50%)";
+        }
+      }
+      el.style.transform = transform;
+      el.style.left = Math.round(x) + "px";
+      el.style.top = Math.round(top) + "px";
+      el.innerHTML =
+        iconHtml(lb.icon, iconSize, color) +
+        (lb.text
+          ? '<span class="txt">' + String(lb.text) + "</span>"
+          : "");
+      if (!lb.text && !lb.icon) {
+        return;
+      }
+      container.appendChild(el);
+      overlayLabelEls.push(el);
+    });
   }
 
   /**
@@ -238,8 +370,8 @@
         color: lv.color || "#787b86",
         lineWidth: lv.lineWidth || 1,
         lineStyle: lv.lineStyle == null ? 2 : lv.lineStyle,
-        axisLabelVisible: true,
-        title: lv.title || "",
+        axisLabelVisible: lv.axisLabelVisible !== false,
+        title: "",
       });
       overlayPriceLines.push(line);
     });
@@ -262,7 +394,7 @@
         lastValueVisible: false,
         priceLineVisible: false,
         crosshairMarkerVisible: false,
-        title: seg.title || "",
+        title: "",
         priceFormat: fmt,
       });
       const t1 = seg.timeFrom;
@@ -309,6 +441,9 @@
       ]);
       overlayZoneSeries.push(top, bottom);
     });
+
+    overlayLabelData = payload.labels || [];
+    renderLabelOverlays();
   }
 
   function makeLine(price, color, title) {
@@ -506,6 +641,19 @@
       postToQt({ type: "ready" });
     },
   };
+
+  chart.timeScale().subscribeVisibleLogicalRangeChange(function () {
+    renderLabelOverlays();
+  });
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(function () {
+      renderLabelOverlays();
+    }).observe(container);
+  } else {
+    window.addEventListener("resize", function () {
+      renderLabelOverlays();
+    });
+  }
 
   function bindBridge() {
     if (typeof qt === "undefined" || typeof QWebChannel === "undefined") {

@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         self._plan_sl = 0.0
         self._explanation: Explanation | None = None
         self._current_symbol = settings.symbol
+        self._overlay_prefs_override = None
 
         self.setWindowTitle("Retrade")
         self.resize(1280, 800)
@@ -408,10 +409,21 @@ class MainWindow(QMainWindow):
 
     def _open_indicator_settings(self) -> None:
         dialog = IndicatorStyleDialog(self._ui_prefs, self)
-        if dialog.exec():
+        dialog.preview_changed.connect(self._on_indicator_style_preview)
+        result = dialog.exec()
+        self._overlay_prefs_override = None
+        if result:
+            self._apply_indicator_overlays()
+        else:
             self._apply_indicator_overlays()
 
+    def _on_indicator_style_preview(self, prefs: object) -> None:
+        self._overlay_prefs_override = prefs
+        self._apply_indicator_overlays()
+
     def _indicator_prefs(self):
+        if self._overlay_prefs_override is not None:
+            return self._overlay_prefs_override
         return self._ui_prefs.prefs.indicators
 
     def _on_indicator_toggled(self, key: str, value: bool) -> None:
