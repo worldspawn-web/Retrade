@@ -6,9 +6,10 @@ import logging
 from enum import Enum, auto
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -50,6 +51,7 @@ from retrade.infra.binance import BinanceMarketData
 from retrade.infra.symbol_universe import SymbolUniverse
 from retrade.ui.debrief_panel import DebriefPanel
 from retrade.ui.indicator_style_dialog import IndicatorStyleDialog
+from retrade.ui.loading_overlay import LoadingOverlay, apply_content_blur
 from retrade.ui.profile_dialog import ProfileDialog
 
 logger = logging.getLogger(__name__)
@@ -105,6 +107,7 @@ class MainWindow(QMainWindow):
         self._explanation: Explanation | None = None
         self._current_symbol = settings.symbol
         self._overlay_prefs_override = None
+        self._symbol_blacklist: set[str] = set()
 
         self.setWindowTitle("Retrade")
         self.resize(1280, 800)
@@ -265,9 +268,19 @@ class MainWindow(QMainWindow):
         root.addWidget(self._debrief)
         root.addLayout(action_row)
 
+        self._content = QWidget(self)
+        self._content.setObjectName("mainContent")
+        self._content.setLayout(root)
+
         central = QWidget(self)
-        central.setLayout(root)
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self._content)
         self.setCentralWidget(central)
+
+        self._loading_overlay = LoadingOverlay(central)
+        central.installEventFilter(self)
         self.setStatusBar(QStatusBar(self))
         self.statusBar().showMessage("Initializing…")
 
@@ -468,6 +481,30 @@ class MainWindow(QMainWindow):
     def _on_chart_ready(self) -> None:
         self._start_new_round()
 
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        if (
+            watched is self.centralWidget()
+            and event.type() is QEvent.Type.Resize
+            and self._loading_overlay is not None
+        ):
+            central = self.centralWidget()
+            if central is not None:
+                self._loading_overlay.setGeometry(central.rect())
+        return super().eventFilter(watched, event)
+
+    def _set_loading(self, enabled: bool, message: str = "Загрузка…") -> None:
+        apply_content_blur(self._content, enabled=enabled, radius=12)
+        if enabled:
+            central = self.centralWidget()
+            if central is not None:
+                self._loading_overlay.setGeometry(central.rect())
+            self._loading_overlay.show_loading(message)
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents()
+        else:
+            self._loading_overlay.hide_loading()
+
     def _start_new_round(self) -> None:
         self._timer.stop()
         self._playback = None
@@ -476,16 +513,24 @@ class MainWindow(QMainWindow):
         self._debrief.clear()
         self._chart.clear_overlays()
         self._set_phase(UiPhase.LOADING)
+        self._set_loading(True, "Подбор монеты…")
         self.statusBar().showMessage("Selecting symbol and historical window…")
         QTimer.singleShot(0, self._load_scenario)
 
     def _load_scenario(self) -> None:
+        symbol: str | None = None
         try:
+            self._set_loading(True, "Загрузка данных…")
             self._universe.ensure_loaded()
-            symbol = pick_symbol(self._universe, self._history)
+            symbol = pick_symbol(
+                self._universe,
+                self._history,
+                exclude=self._symbol_blacklist,
+            )
             self._current_symbol = symbol
             self._symbol_label.setText(symbol)
             self.setWindowTitle(f"Retrade — {symbol}")
+            self._set_loading(True, f"Загрузка {symbol}…")
             self.statusBar().showMessage(f"Loading {symbol}…")
 
             scenario = build_scenario(
@@ -495,15 +540,44 @@ class MainWindow(QMainWindow):
                 context_timeframes=self._settings.context_timeframes,
                 history=self._history,
                 history_lookback_days=self._settings.history_lookback_days,
+                max_window_attempts=3,
             )
         except Exception as exc:  # noqa: BLE001 - show to user in prototype
             logger.exception("Failed to build scenario")
+            if symbol:
+                self._symbol_blacklist.add(symbol)
+                logger.info(
+                    "Blacklisted %s for this session (%s symbols)",
+                    symbol,
+                    len(self._symbol_blacklist),
+                )
+            self._set_loading(False)
+            exhausted = "Нет доступных монет" in str(exc)
             QMessageBox.critical(
                 self,
                 "Retrade",
-                f"Не удалось загрузить данные:\n{exc}",
+                f"Не удалось загрузить данные"
+                f"{f' для {symbol}' if symbol else ''}:\n{exc}"
+                + (
+                    "\n\nБольше нет монет для попытки в этой сессии."
+                    if exhausted
+                    else "\n\nПопробуем другую монету."
+                ),
             )
-            self._set_phase(UiPhase.RESULT)
+            if exhausted:
+                self._set_phase(UiPhase.RESULT)
+                return
+            # Another coin available?
+            try:
+                pick_symbol(
+                    self._universe,
+                    self._history,
+                    exclude=self._symbol_blacklist,
+                )
+            except Exception:  # noqa: BLE001
+                self._set_phase(UiPhase.RESULT)
+                return
+            QTimer.singleShot(0, self._start_new_round)
             return
 
         self._session = RoundSession(scenario=scenario)
@@ -513,6 +587,7 @@ class MainWindow(QMainWindow):
         self._refresh_chart(fit=True)
         self._set_phase(UiPhase.DECIDE)
         self._apply_indicator_overlays()
+        self._set_loading(False)
         self.statusBar().showMessage(
             f"{scenario.symbol} | score {scenario.score:.1f}"
             f" [{', '.join(scenario.score_reasons) or '—'}] | "

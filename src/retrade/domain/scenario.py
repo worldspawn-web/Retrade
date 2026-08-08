@@ -77,12 +77,20 @@ def pick_symbol(
     universe: SymbolUniverse,
     history: RoundHistory,
     *,
+    exclude: frozenset[str] | set[str] | None = None,
     rng: random.Random | None = None,
 ) -> str:
     """Pick a random eligible symbol from the top-N universe."""
     rng = rng or random.Random()
+    blocked = set(exclude or ())
     pool = universe.ensure_loaded()
-    eligible = history.eligible_symbols(pool)
+    eligible = [s for s in history.eligible_symbols(pool) if s not in blocked]
+    if not eligible:
+        eligible = [s for s in pool if s not in blocked]
+    if not eligible:
+        raise RuntimeError(
+            "Нет доступных монет (все в кулдауне или блеклисте сессии)"
+        )
     return rng.choice(eligible)
 
 
@@ -97,7 +105,7 @@ def build_scenario(
     visible_bars: int = 180,
     hidden_bars: int = 80,
     history_lookback_days: int = 400,
-    max_window_attempts: int = 10,
+    max_window_attempts: int = 3,
     rng: random.Random | None = None,
 ) -> RoundScenario:
     """
