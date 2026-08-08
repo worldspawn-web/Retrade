@@ -16,6 +16,7 @@ class PlaybackState:
     scenario: RoundScenario
     plan: TradePlan | None
     shown_hidden: int = 0
+    hold_anchor: int = 0
     outcome: TradeOutcome = TradeOutcome.OPEN
     result_candle: Candle | None = None
     finished: bool = False
@@ -43,7 +44,6 @@ class PlaybackState:
                 timeframe,
                 self.execution_candles,
             )
-        # Rebuild HTF with partial bar from revealed execution candles.
         htf = self.scenario.series_by_tf[timeframe]
         return htf_series_with_partial(
             htf,
@@ -76,10 +76,8 @@ class PlaybackState:
             self.result_candle = candle
             return TradeResult(outcome, candle)
 
-        if (
-            hold_check_bars > 0
-            and self.shown_hidden % hold_check_bars == 0
-        ):
+        progress = self.shown_hidden - self.hold_anchor
+        if hold_check_bars > 0 and progress > 0 and progress % hold_check_bars == 0:
             return TradeResult(TradeOutcome.OPEN, candle, hold=True)
         return None
 
@@ -112,18 +110,77 @@ class PlaybackState:
 
 @dataclass
 class RoundSession:
-    """Owns scenario + optional playback after confirm."""
+    """Owns scenario + shared reveal cursor (pre-trade and playback)."""
 
     scenario: RoundScenario
     playback: PlaybackState | None = field(default=None)
+    revealed: int = 0
+
+    @property
+    def can_advance(self) -> bool:
+        return self.revealed < len(self.scenario.hidden_execution)
+
+    @property
+    def entry_price(self) -> float:
+        return self.execution_candles[-1].close
+
+    @property
+    def cursor_ms(self) -> int:
+        if self.revealed == 0:
+            return self.scenario.cursor_ms
+        return self.scenario.hidden_execution[self.revealed - 1].close_time
+
+    @property
+    def execution_candles(self) -> tuple[Candle, ...]:
+        return (
+            self.scenario.visible_execution.candles
+            + self.scenario.hidden_execution[: self.revealed]
+        )
+
+    def series_for(self, timeframe: str) -> CandleSeries:
+        if timeframe == self.scenario.execution_timeframe:
+            return CandleSeries(
+                self.scenario.symbol,
+                timeframe,
+                self.execution_candles,
+            )
+        htf = self.scenario.series_by_tf[timeframe]
+        return htf_series_with_partial(
+            htf,
+            self.execution_candles,
+            cursor_ms=self.cursor_ms,
+            interval_ms=TIMEFRAME_MS[timeframe],
+        )
+
+    def advance_one(self) -> Candle | None:
+        """Pre-trade: reveal one more execution candle."""
+        if not self.can_advance:
+            return None
+        candle = self.scenario.hidden_execution[self.revealed]
+        self.revealed += 1
+        return candle
 
     def start_trade(self, plan: TradePlan) -> PlaybackState:
         plan.validate()
-        self.playback = PlaybackState(scenario=self.scenario, plan=plan)
+        self.playback = PlaybackState(
+            scenario=self.scenario,
+            plan=plan,
+            shown_hidden=self.revealed,
+            hold_anchor=self.revealed,
+        )
         return self.playback
 
     def start_skip(self) -> PlaybackState:
-        self.playback = PlaybackState(scenario=self.scenario, plan=None)
+        self.playback = PlaybackState(
+            scenario=self.scenario,
+            plan=None,
+            shown_hidden=self.revealed,
+            hold_anchor=self.revealed,
+        )
         self.playback.finished = True
         self.playback.outcome = TradeOutcome.SKIP
         return self.playback
+
+    def sync_revealed_from_playback(self) -> None:
+        if self.playback is not None:
+            self.revealed = self.playback.shown_hidden

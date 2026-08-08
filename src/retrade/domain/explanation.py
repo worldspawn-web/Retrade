@@ -12,6 +12,7 @@ from retrade.domain.smc import (
     StructureEventKind,
     StructureLevel,
     StructureMap,
+    SwingKind,
     analyze_series,
 )
 from retrade.domain.trading import Side, TradeOutcome, TradePlan
@@ -56,10 +57,15 @@ def build_explanation(
     show_bos: bool = True,
     show_fvg: bool = True,
     show_levels: bool = False,
+    show_swings: bool = False,
 ) -> Explanation:
     """Analyze revealed price action into a compact visual debrief."""
-    execution_map = analyze_series(execution_series)
-    context_map = analyze_series(context_series) if context_series is not None else None
+    execution_map = analyze_series(execution_series, swing_strength=2)
+    context_map = (
+        analyze_series(context_series, swing_strength=2)
+        if context_series is not None
+        else None
+    )
 
     chips: list[DebriefChip] = [
         DebriefChip("OUT", _outcome_short(outcome), _outcome_tone(outcome)),
@@ -133,6 +139,7 @@ def build_explanation(
             show_bos=show_bos,
             show_fvg=show_fvg,
             show_levels=show_levels,
+            show_swings=show_swings,
             ref_price=ref_price,
         ),
         execution_map=execution_map,
@@ -146,11 +153,24 @@ def structure_to_overlays(
     show_bos: bool = True,
     show_fvg: bool = True,
     show_levels: bool = False,
+    show_swings: bool = False,
     ref_price: float | None = None,
     max_levels: int = 2,
 ) -> dict[str, Any]:
-    """Retrade overlays: BOS/CHoCH, FVG zones, 1–2 nearest levels."""
+    """Retrade overlays: swings, BOS/CHoCH, FVG zones, 1–2 nearest levels."""
     markers: list[dict[str, Any]] = []
+    if show_swings:
+        for swing in structure.swings[-40:]:
+            is_high = swing.kind is SwingKind.HIGH
+            markers.append(
+                {
+                    "time": swing.time_sec,
+                    "position": "aboveBar" if is_high else "belowBar",
+                    "color": "#787b86" if is_high else "#b2b5be",
+                    "shape": "circle",
+                    "text": "SH" if is_high else "SL",
+                }
+            )
     if show_bos:
         for event in structure.events[-20:]:
             bullish = event.bias is Bias.BULLISH

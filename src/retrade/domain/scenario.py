@@ -221,9 +221,9 @@ def _build_from_end_time(
 
     start = max(0, decision_index - local_visible)
     visible_slice = execution.candles[start:decision_index]
-    hidden = execution.candles[decision_index : decision_index + local_hidden]
-    if not hidden:
-        hidden = execution.candles[decision_index:]
+    # Full remaining series after decision (KEEP / pre-trade can run long).
+    # Scoring still used local_hidden only to pick the decision point.
+    hidden = execution.candles[decision_index:]
 
     ensure_non_empty(visible_slice, context="visible execution")
     ensure_non_empty(hidden, context="hidden execution")

@@ -12,6 +12,7 @@ class IndicatorPrefs:
     show_bos: bool = False
     show_fvg: bool = False
     show_levels: bool = False
+    show_swings: bool = False
 
 
 @dataclass
@@ -41,6 +42,7 @@ class UiPrefsStore:
                     show_bos=bool(ind.get("show_bos", False)),
                     show_fvg=bool(ind.get("show_fvg", False)),
                     show_levels=bool(ind.get("show_levels", False)),
+                    show_swings=bool(ind.get("show_swings", False)),
                 )
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
@@ -66,6 +68,8 @@ class UiPrefsStore:
             self.prefs.indicators.show_fvg = value
         elif key == "levels":
             self.prefs.indicators.show_levels = value
+        elif key == "swings":
+            self.prefs.indicators.show_swings = value
         else:
             raise KeyError(key)
         self.save()

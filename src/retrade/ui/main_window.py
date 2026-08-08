@@ -158,18 +158,25 @@ class MainWindow(QMainWindow):
         self._act_fvg.setCheckable(True)
         self._act_levels = QAction("Levels (nearest)", self)
         self._act_levels.setCheckable(True)
+        self._act_swings = QAction("Swings (5)", self)
+        self._act_swings.setCheckable(True)
         ind = self._ui_prefs.prefs.indicators
         self._act_bos.setChecked(ind.show_bos)
         self._act_fvg.setChecked(ind.show_fvg)
         self._act_levels.setChecked(ind.show_levels)
+        self._act_swings.setChecked(ind.show_swings)
         self._act_bos.toggled.connect(lambda v: self._on_indicator_toggled("bos", v))
         self._act_fvg.toggled.connect(lambda v: self._on_indicator_toggled("fvg", v))
         self._act_levels.toggled.connect(
             lambda v: self._on_indicator_toggled("levels", v)
         )
+        self._act_swings.toggled.connect(
+            lambda v: self._on_indicator_toggled("swings", v)
+        )
         self._indicators_menu.addAction(self._act_bos)
         self._indicators_menu.addAction(self._act_fvg)
         self._indicators_menu.addAction(self._act_levels)
+        self._indicators_menu.addAction(self._act_swings)
         self._indicators_btn.setMenu(self._indicators_menu)
 
         self._btn_long = QPushButton("LONG")
@@ -370,6 +377,7 @@ class MainWindow(QMainWindow):
             "show_bos": ind.show_bos,
             "show_fvg": ind.show_fvg,
             "show_levels": ind.show_levels,
+            "show_swings": ind.show_swings,
         }
 
     def _on_indicator_toggled(self, key: str, value: bool) -> None:
@@ -380,8 +388,15 @@ class MainWindow(QMainWindow):
         if self._playback is not None and self._playback.plan is not None:
             return self._playback.plan.entry
         if self._session is not None:
-            return self._session.scenario.entry_price
+            return self._session.entry_price
         return None
+
+    def _current_series(self):
+        if self._session is None:
+            return None
+        if self._playback is not None:
+            return self._playback.series_for(self._active_tf)
+        return self._session.series_for(self._active_tf)
 
     def _apply_indicator_overlays(self) -> None:
         """Pre-trade / live indicator overlays from visible series + prefs."""
@@ -392,21 +407,10 @@ class MainWindow(QMainWindow):
             return
         if self._phase is UiPhase.LOADING:
             return
-        # During playback keep trade levels; still refresh structure if toggled.
-        series = (
-            self._playback.series_for(self._active_tf)
-            if self._playback is not None
-            else None
-        )
+        series = self._current_series()
         if series is None:
-            cursor = self._session.scenario.cursor_ms
-            if self._active_tf == self._settings.execution_timeframe:
-                series = self._session.scenario.visible_execution
-            else:
-                series = self._session.scenario.series_at_cursor(
-                    self._active_tf, cursor
-                )
-        structure = analyze_series(series)
+            return
+        structure = analyze_series(series, swing_strength=2)
         self._chart.set_overlays(
             structure_to_overlays(
                 structure,
@@ -474,16 +478,9 @@ class MainWindow(QMainWindow):
     def _refresh_chart(self, *, fit: bool) -> None:
         if self._session is None:
             return
-        if self._playback is not None:
-            series = self._playback.series_for(self._active_tf)
-        else:
-            cursor = self._session.scenario.cursor_ms
-            if self._active_tf == self._settings.execution_timeframe:
-                series = self._session.scenario.visible_execution
-            else:
-                series = self._session.scenario.series_at_cursor(
-                    self._active_tf, cursor
-                )
+        series = self._current_series()
+        if series is None:
+            return
         self._chart.set_candles(list(series.candles), fit=fit)
         self._chart.set_hud(
             f"{self._current_symbol}  {self._active_tf.upper()}"
@@ -513,12 +510,15 @@ class MainWindow(QMainWindow):
                 structure_to_overlays(context, ref_price=ref, **kwargs)
             )
             return
-        if self._playback is None or self._session is None:
+        if self._playback is not None:
+            series = self._playback.series_for(timeframe)
+        elif self._session is not None:
+            series = self._session.series_for(timeframe)
+        else:
             return
-        series = self._playback.series_for(timeframe)
         self._chart.set_overlays(
             structure_to_overlays(
-                analyze_series(series),
+                analyze_series(series, swing_strength=2),
                 ref_price=ref,
                 **kwargs,
             )
@@ -547,7 +547,7 @@ class MainWindow(QMainWindow):
         }:
             return
         self._side = side
-        entry = self._session.scenario.entry_price
+        entry = self._session.entry_price
         self._plan_entry = entry
         plan = default_plan(side, entry)
         self._plan_tp = plan.take_profit
@@ -682,21 +682,28 @@ class MainWindow(QMainWindow):
 
         if result.hold:
             self._timer.stop()
+            if self._session is not None:
+                self._session.sync_revealed_from_playback()
             self._set_phase(UiPhase.HOLD)
             n = self._settings.hold_check_bars
+            progress = self._playback.shown_hidden - self._playback.hold_anchor
             self.statusBar().showMessage(
-                f"Пауза после {self._playback.shown_hidden} свечей "
+                f"Пауза после {progress} свечей сделки "
                 f"(каждые {n}) — EXIT или KEEP"
             )
             return
 
         self._timer.stop()
+        if self._session is not None:
+            self._session.sync_revealed_from_playback()
         self._finish_with_outcome(result.outcome)
 
     def _on_exit(self) -> None:
         if self._playback is None or self._phase is not UiPhase.HOLD:
             return
         result = self._playback.exit_at_market()
+        if self._session is not None:
+            self._session.sync_revealed_from_playback()
         self._finish_with_outcome(result.outcome)
 
     def _on_keep(self) -> None:
@@ -708,6 +715,11 @@ class MainWindow(QMainWindow):
         self._timer.start()
 
     def _on_step_candle(self) -> None:
+        if self._session is None:
+            return
+        if self._phase in {UiPhase.DECIDE, UiPhase.PLACE_ORDERS}:
+            self._step_pretrade()
+            return
         if self._playback is None or self._phase is not UiPhase.RESULT:
             return
         before = self._playback.shown_hidden
@@ -715,6 +727,7 @@ class MainWindow(QMainWindow):
         if candle is None:
             self._btn_step.setEnabled(False)
             return
+        self._session.sync_revealed_from_playback()
         use_update = self._active_tf == self._settings.execution_timeframe
         if use_update:
             self._chart.update_candle(
@@ -734,6 +747,53 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"+1 свеча · {self._playback.shown_hidden}/"
             f"{len(self._playback.scenario.hidden_execution)}"
+        )
+
+    def _step_pretrade(self) -> None:
+        if self._session is None:
+            return
+        before = self._session.revealed
+        candle = self._session.advance_one()
+        if candle is None:
+            self._btn_step.setEnabled(False)
+            return
+
+        use_update = self._active_tf == self._settings.execution_timeframe
+        if use_update:
+            self._chart.update_candle(
+                self._session.scenario.hidden_execution[before]
+            )
+        else:
+            self._refresh_chart(fit=False)
+
+        if self._phase is UiPhase.PLACE_ORDERS and self._side is not None:
+            old_entry = self._plan_entry
+            new_entry = self._session.entry_price
+            delta = new_entry - old_entry
+            self._plan_entry = new_entry
+            self._plan_tp += delta
+            self._plan_sl += delta
+            self._configure_price_spins(new_entry)
+            self._tp_spin.blockSignals(True)
+            self._sl_spin.blockSignals(True)
+            self._tp_spin.setValue(self._plan_tp)
+            self._sl_spin.setValue(self._plan_sl)
+            self._tp_spin.blockSignals(False)
+            self._sl_spin.blockSignals(False)
+            self._chart.set_trade_levels(
+                entry=self._plan_entry,
+                take_profit=self._plan_tp,
+                stop_loss=self._plan_sl,
+                editable=True,
+            )
+
+        self._apply_indicator_overlays()
+        self._btn_step.setEnabled(self._session.can_advance)
+        entry = self._session.entry_price
+        self.statusBar().showMessage(
+            f"+1 свеча · {self._session.revealed}/"
+            f"{len(self._session.scenario.hidden_execution)} · "
+            f"entry {entry:.{price_decimals(entry)}f}"
         )
 
     def _finish_with_outcome(self, outcome: TradeOutcome) -> None:
@@ -837,13 +897,19 @@ class MainWindow(QMainWindow):
         self._btn_keep.setVisible(hold)
         self._btn_exit.setEnabled(hold)
         self._btn_keep.setEnabled(hold)
-        self._btn_step.setVisible(result)
-        can_step = (
-            result
-            and self._playback is not None
-            and self._playback.can_reveal_more
-            and self._playback.outcome is not TradeOutcome.SKIP
-        )
+
+        show_step = decide or place or result
+        self._btn_step.setVisible(show_step)
+        if decide or place:
+            can_step = self._session is not None and self._session.can_advance
+        elif result:
+            can_step = (
+                self._playback is not None
+                and self._playback.can_reveal_more
+                and self._playback.outcome is not TradeOutcome.SKIP
+            )
+        else:
+            can_step = False
         self._btn_step.setEnabled(bool(can_step))
         self._btn_next.setEnabled(result or (not loading and not playback and not hold))
         self._tp_spin.setEnabled(place)
