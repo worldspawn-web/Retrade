@@ -21,6 +21,7 @@ class _Spinner(QWidget):
         self.setFixedSize(56, 56)
         self._timer = QTimer(self)
         self._timer.setInterval(30)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._tick)
 
     def start(self) -> None:

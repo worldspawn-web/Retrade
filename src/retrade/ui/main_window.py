@@ -6,7 +6,7 @@ import logging
 from enum import Enum, auto
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QAction, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -38,7 +38,7 @@ from retrade.domain.profile import (
     exit_price_for_outcome,
 )
 from retrade.domain.round_history import RoundHistory
-from retrade.domain.scenario import build_scenario, pick_symbol
+from retrade.domain.scenario import RoundScenario, pick_symbol
 from retrade.domain.smc import analyze_series
 from retrade.domain.trading import (
     Side,
@@ -53,6 +53,7 @@ from retrade.ui.debrief_panel import DebriefPanel
 from retrade.ui.indicator_style_dialog import IndicatorStyleDialog
 from retrade.ui.loading_overlay import LoadingOverlay, apply_content_blur
 from retrade.ui.profile_dialog import ProfileDialog
+from retrade.ui.scenario_load_worker import ScenarioLoadWorker
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,8 @@ class MainWindow(QMainWindow):
         self._current_symbol = settings.symbol
         self._overlay_prefs_override = None
         self._symbol_blacklist: set[str] = set()
+        self._load_thread: QThread | None = None
+        self._load_worker: ScenarioLoadWorker | None = None
 
         self.setWindowTitle("Retrade")
         self.resize(1280, 800)
@@ -515,75 +518,52 @@ class MainWindow(QMainWindow):
         self._set_phase(UiPhase.LOADING)
         self._set_loading(True, "Подбор монеты…")
         self.statusBar().showMessage("Selecting symbol and historical window…")
-        QTimer.singleShot(0, self._load_scenario)
+        QTimer.singleShot(0, self._start_scenario_load)
 
-    def _load_scenario(self) -> None:
-        symbol: str | None = None
-        try:
-            self._set_loading(True, "Загрузка данных…")
-            self._universe.ensure_loaded()
-            symbol = pick_symbol(
-                self._universe,
-                self._history,
-                exclude=self._symbol_blacklist,
-            )
-            self._current_symbol = symbol
-            self._symbol_label.setText(symbol)
-            self.setWindowTitle(f"Retrade — {symbol}")
-            self._set_loading(True, f"Загрузка {symbol}…")
-            self.statusBar().showMessage(f"Loading {symbol}…")
-
-            scenario = build_scenario(
-                self._market,
-                symbol=symbol,
-                execution_timeframe=self._settings.execution_timeframe,
-                context_timeframes=self._settings.context_timeframes,
-                history=self._history,
-                history_lookback_days=self._settings.history_lookback_days,
-                max_window_attempts=3,
-            )
-        except Exception as exc:  # noqa: BLE001 - show to user in prototype
-            logger.exception("Failed to build scenario")
-            if symbol:
-                self._symbol_blacklist.add(symbol)
-                logger.info(
-                    "Blacklisted %s for this session (%s symbols)",
-                    symbol,
-                    len(self._symbol_blacklist),
-                )
-            self._set_loading(False)
-            exhausted = "Нет доступных монет" in str(exc)
-            QMessageBox.critical(
-                self,
-                "Retrade",
-                f"Не удалось загрузить данные"
-                f"{f' для {symbol}' if symbol else ''}:\n{exc}"
-                + (
-                    "\n\nБольше нет монет для попытки в этой сессии."
-                    if exhausted
-                    else "\n\nПопробуем другую монету."
-                ),
-            )
-            if exhausted:
-                self._set_phase(UiPhase.RESULT)
-                return
-            # Another coin available?
-            try:
-                pick_symbol(
-                    self._universe,
-                    self._history,
-                    exclude=self._symbol_blacklist,
-                )
-            except Exception:  # noqa: BLE001
-                self._set_phase(UiPhase.RESULT)
-                return
-            QTimer.singleShot(0, self._start_new_round)
+    def _start_scenario_load(self) -> None:
+        if self._load_thread is not None and self._load_thread.isRunning():
             return
 
+        worker = ScenarioLoadWorker(
+            market=self._market,
+            universe=self._universe,
+            history=self._history,
+            settings=self._settings,
+            blacklist=frozenset(self._symbol_blacklist),
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_load_progress)
+        worker.finished.connect(self._on_load_finished)
+        worker.failed.connect(self._on_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_load_thread_finished)
+
+        self._load_worker = worker
+        self._load_thread = thread
+        thread.start()
+
+    def _on_load_progress(self, message: str) -> None:
+        self._loading_overlay.set_message(message)
+        if not self._loading_overlay.isVisible():
+            self._set_loading(True, message)
+        self.statusBar().showMessage(message)
+
+    def _on_load_finished(self, scenario: object) -> None:
+        if not isinstance(scenario, RoundScenario):
+            self._on_load_failed("", "Некорректный ответ загрузчика")
+            return
+
+        self._current_symbol = scenario.symbol
+        self._symbol_label.setText(scenario.symbol)
+        self.setWindowTitle(f"Retrade — {scenario.symbol}")
         self._session = RoundSession(scenario=scenario)
         self._active_tf = self._settings.execution_timeframe
         self._tf_buttons[self._active_tf].setChecked(True)
-        # fit=True recreates the series in JS (drops previous price scale).
         self._refresh_chart(fit=True)
         self._set_phase(UiPhase.DECIDE)
         self._apply_indicator_overlays()
@@ -595,6 +575,46 @@ class MainWindow(QMainWindow):
             f"hidden {len(scenario.hidden_execution)} | entry "
             f"{scenario.entry_price:.{price_decimals(scenario.entry_price)}f}"
         )
+
+    def _on_load_failed(self, symbol: str, error: str) -> None:
+        logger.error("Scenario load failed for %s: %s", symbol or "?", error)
+        if symbol:
+            self._symbol_blacklist.add(symbol)
+            logger.info(
+                "Blacklisted %s for this session (%s symbols)",
+                symbol,
+                len(self._symbol_blacklist),
+            )
+        self._set_loading(False)
+        exhausted = "Нет доступных монет" in error
+        QMessageBox.critical(
+            self,
+            "Retrade",
+            f"Не удалось загрузить данные"
+            f"{f' для {symbol}' if symbol else ''}:\n{error}"
+            + (
+                "\n\nБольше нет монет для попытки в этой сессии."
+                if exhausted
+                else "\n\nПопробуем другую монету."
+            ),
+        )
+        if exhausted:
+            self._set_phase(UiPhase.RESULT)
+            return
+        try:
+            pick_symbol(
+                self._universe,
+                self._history,
+                exclude=self._symbol_blacklist,
+            )
+        except Exception:  # noqa: BLE001
+            self._set_phase(UiPhase.RESULT)
+            return
+        QTimer.singleShot(0, self._start_new_round)
+
+    def _on_load_thread_finished(self) -> None:
+        self._load_thread = None
+        self._load_worker = None
 
     def _refresh_chart(self, *, fit: bool) -> None:
         if self._session is None:
